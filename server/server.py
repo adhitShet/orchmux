@@ -1466,7 +1466,8 @@ async def slack_send(req: Request, token: str = ""):
 async def dashboard(token: str = "", ui: str = ""):
     if not _check_token(token):
         return HTMLResponse(content="<h2>403 Forbidden</h2><p>Add ?token=YOUR_TOKEN to the URL.</p>", status_code=403)
-    if ui == "clean":
+    # Default to clean UI; pass ?ui=legacy for the old built-in dashboard
+    if ui != "legacy":
         html_path = _CLEAN_DIR / "orchmux-clean.html"
         if html_path.exists():
             return HTMLResponse(content=html_path.read_text())
