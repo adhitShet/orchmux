@@ -42,7 +42,12 @@ if [[ -f "$TG_ENV" ]]; then
 fi
 
 # ── Tailscale bind: dashboard only reachable on VPN, never public internet ─────
-TAILSCALE_IP=$(ip addr show tailscale0 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1)
+# ip addr show is Linux-only; fall back to ifconfig on macOS
+if command -v ip >/dev/null 2>&1; then
+  TAILSCALE_IP=$(ip addr show tailscale0 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1)
+else
+  TAILSCALE_IP=$(ifconfig tailscale0 2>/dev/null | awk '/inet /{print $2}')
+fi
 if [[ -n "$TAILSCALE_IP" ]]; then
   export ORCHMUX_BIND_HOST="$TAILSCALE_IP"
   echo "  dashboard: http://${TAILSCALE_IP}:9889/dashboard (Tailscale only)"

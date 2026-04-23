@@ -17,7 +17,11 @@ if tmux has-session -t "$SESSION" 2>/dev/null; then
 else
     # Session dead — recreate it
     source "$HOME/.claude/hooks/.env" 2>/dev/null || true
-    BIND=$(ip addr show tailscale0 2>/dev/null | grep -oP 'inet \K[\d.]+' | head -1)
+    if command -v ip >/dev/null 2>&1; then
+      BIND=$(ip addr show tailscale0 2>/dev/null | grep -oP 'inet \K[\d.]+' | head -1)
+    else
+      BIND=$(ifconfig tailscale0 2>/dev/null | awk '/inet /{print $2}')
+    fi
     export ORCHMUX_BIND_HOST="${BIND:-127.0.0.1}"
     tmux new-session -d -s "$SESSION" -c "$ORCHMUX"
     tmux send-keys -t "$SESSION" "cd $ORCHMUX && $ORCHMUX/.venv/bin/python watcher.py" Enter
