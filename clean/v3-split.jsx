@@ -586,7 +586,7 @@ function ManagePanel({workers, domains}) {
           <div style={{fontSize:11.5,color:'#8a8072',lineHeight:1.5}}>Create a new tmux session and register it as a worker.</div>
           <div>
             <div style={sLabel}>SESSION NAME</div>
-            <input value={spName} onChange={e=>setSpName(e.target.value)} placeholder="e.g. cx-bot-fix-6" style={inputStyle}/>
+            <input value={spName} onChange={e=>setSpName(e.target.value)} placeholder="e.g. eng-worker-3" style={inputStyle}/>
           </div>
           <div>
             <div style={sLabel}>DOMAIN</div>

@@ -251,9 +251,7 @@ _SVC_SNIPPETS: dict[str, str] = _load_svc_snippets()
 
 # keyword triggers → snippet keys
 _SVC_RULES: list[tuple[list[str], list[str]]] = [
-    (["metabase", "q191", "q192", "q192", "q192", "q192", "dashboard", "card/",
-      "data query", "fetch data", "bdr", "drr", "demand", "inventory data",
-      "snowflake query", ],
+    (["metabase", "dashboard", "card/", "data query", "fetch data", "snowflake query"],
      ["metabase"]),
     (["snowflake", "snowsql"],
      ["snowflake"]),
@@ -1875,15 +1873,7 @@ function mdParse(raw){{
         <div style="flex:0 0 auto">
           <div style="font-size:9px;color:#666;margin-bottom:4px;text-transform:uppercase;letter-spacing:.06em">Domain override</div>
           <select id="dm-domain" style="background:#2a2a2a;border:1px solid #3a3a3a;border-radius:6px;color:#888;padding:7px 10px;font-size:12px;font-family:inherit;outline:none">
-            <option value="cx">cx</option>
-            <option value="research" selected>research</option>
-            <option value="finance">finance</option>
-            <option value="amazon">amazon</option>
-            <option value="firmware">firmware</option>
-            <option value="data">data</option>
-            <option value="pr_review">pr_review</option>
-            <option value="wacli">wacli</option>
-            <option value="legal">legal</option>
+            <option value="engineering" selected>engineering</option>
           </select>
         </div>
       </div>
@@ -1915,7 +1905,7 @@ function mdParse(raw){{
       </div>
       <div>
         <div style="font-size:10px;color:#888;margin-bottom:6px;text-transform:uppercase;letter-spacing:.05em">Role / How to use <span style="color:#555;text-transform:none;font-size:10px">(supervisor context)</span></div>
-        <textarea id="meta-role" placeholder="e.g. Handles CX bot bugs and PR reviews. Prefers step-by-step tasks. Always run /cx-monitor first." style="width:100%;background:#2a2a2a;border:1px solid #444;border-radius:6px;color:#ddd;padding:10px;font-size:12px;font-family:inherit;outline:none;resize:none;line-height:1.6;box-sizing:border-box;min-height:100px"></textarea>
+        <textarea id="meta-role" placeholder="e.g. Handles engineering tasks and PR reviews. Prefers step-by-step tasks." style="width:100%;background:#2a2a2a;border:1px solid #444;border-radius:6px;color:#ddd;padding:10px;font-size:12px;font-family:inherit;outline:none;resize:none;line-height:1.6;box-sizing:border-box;min-height:100px"></textarea>
       </div>
       <button onclick="saveMeta()" style="background:#1a73e8;border:none;color:#fff;border-radius:8px;padding:11px;font-size:13px;font-family:inherit;font-weight:600;cursor:pointer">Save</button>
       <div id="meta-msg" style="font-size:11px;color:#aaa;text-align:center;min-height:16px"></div>
@@ -1952,12 +1942,7 @@ function mdParse(raw){{
       <div style="flex:0 0 120px">
         <div style="font-size:10px;color:#aaa;margin-bottom:4px">DOMAIN</div>
         <select id="d-domain" style="width:100%;background:#fff;border:1px solid #e0e0e0;border-radius:6px;color:#333;padding:5px 8px;font-size:12px;font-family:inherit;outline:none">
-          <option value="cx">cx</option>
-          <option value="research">research</option>
-          <option value="data">data</option>
-          <option value="pr_review">pr_review</option>
-          <option value="wacli">wacli</option>
-          <option value="legal">legal</option>
+          <option value="engineering">engineering</option>
         </select>
       </div>
       <div style="flex:1;min-width:240px;position:relative">
@@ -2053,7 +2038,7 @@ function mdParse(raw){{
           <div style="font-size:10px;color:#888;line-height:1.5">Creates a new tmux session, starts the model CLI inside it, and registers it as a worker.</div>
           <div>
             <div style="font-size:10px;color:#aaa;margin-bottom:4px">SESSION NAME</div>
-            <input id="sp-name" placeholder="e.g. cx-bot-fix-6" style="width:100%;box-sizing:border-box;background:#fff;border:1px solid #e0e0e0;border-radius:6px;color:#333;padding:6px 10px;font-size:12px;font-family:inherit;outline:none">
+            <input id="sp-name" placeholder="e.g. eng-worker-3" style="width:100%;box-sizing:border-box;background:#fff;border:1px solid #e0e0e0;border-radius:6px;color:#333;padding:6px 10px;font-size:12px;font-family:inherit;outline:none">
           </div>
           <div>
             <div style="font-size:10px;color:#aaa;margin-bottom:4px">DOMAIN</div>
@@ -2165,8 +2150,7 @@ const SKILLS=[
   {{n:'metabase',c:'data'}},{{n:'snowflake',c:'data'}},{{n:'data-audit',c:'data'}},
   {{n:'revenue-report',c:'data'}},{{n:'analytics',c:'data'}},
   // Ops
-  {{n:'error-digest',c:'ops'}},{{n:'slack-thread-triage',c:'ops'}},
-  {{n:'notion-action-extractor',c:'ops'}},
+  {{n:'error-digest',c:'ops'}},{{n:'triage',c:'ops'}},
   // Docs & Content
   {{n:'google-workspace',c:'docs'}},{{n:'google-docs-formatting',c:'docs'}},
   {{n:'pptx-design',c:'docs'}},

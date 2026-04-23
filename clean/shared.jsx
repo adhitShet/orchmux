@@ -240,16 +240,14 @@ function useDomains() {
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 const LIVE_SKILLS = [
-  {n:'cx-bot-fix',c:'cx'},{n:'cx-stats',c:'cx'},{n:'cx-monitor',c:'cx'},
-  {n:'cx-latency',c:'cx'},{n:'cx-opus',c:'cx'},{n:'cx-live-funnel',c:'cx'},
   {n:'deploy',c:'deploy'},{n:'hotfix-cycle',c:'deploy'},{n:'deploy-broadcast',c:'deploy'},
   {n:'git-workflow',c:'code'},{n:'fastapi-patterns',c:'code'},{n:'postgresql',c:'code'},
-  {n:'code-audit',c:'code'},{n:'debug',c:'code'},{n:'metabase',c:'data'},
-  {n:'snowflake',c:'data'},{n:'ivds',c:'data'},{n:'financial-extract',c:'data'},
+  {n:'code-audit',c:'code'},{n:'debug',c:'code'},{n:'react-patterns',c:'code'},
+  {n:'metabase',c:'data'},{n:'snowflake',c:'data'},
   {n:'research',c:'ops'},{n:'triage',c:'ops'},{n:'error-digest',c:'ops'},
-  {n:'slack-thread-triage',c:'ops'},{n:'google-workspace',c:'docs'},
-  {n:'pptx-design',c:'docs'},{n:'standup',c:'cmd'},{n:'architect',c:'cmd'},
-  {n:'brainstorm',c:'cmd'},{n:'patent-brief',c:'legal'},
+  {n:'google-workspace',c:'docs'},{n:'pptx-design',c:'docs'},
+  {n:'standup',c:'cmd'},{n:'architect',c:'cmd'},{n:'brainstorm',c:'cmd'},
+  {n:'patent-brief',c:'legal'},
 ];
 
 function useTickerClock() {
