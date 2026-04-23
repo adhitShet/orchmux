@@ -1,0 +1,85 @@
+# orchmux worker registry
+# model: claude | codex | kimi
+# queue_strategy: queue | spawn | queue_then_spawn
+#   queue           = wait for a persistent worker to free up (good for stateful tasks)
+#   spawn           = always spawn a temp worker if all busy (good for fast/isolated tasks)
+#   queue_then_spawn = queue up to max_queue_depth, then spawn temp workers beyond that
+# spawn_allowed: whether temp workers can be created for this domain
+# max_queue_depth: tasks queued before spawning kicks in (only for queue_then_spawn)
+# temp_ttl_minutes: how long a temp worker lives after finishing its task
+
+workers:
+
+  engineering:
+    sessions: [eng-worker-1, eng-worker-2, eng-worker-3]
+    model: claude
+    handles: [bug fix, deploy, code review, pull request, API, backend, frontend, database]
+    queue_strategy: queue_then_spawn
+    max_queue_depth: 2
+    spawn_allowed: true
+    temp_ttl_minutes: 30
+    # engineering tasks need context — prefer persistent workers, spawn only if queue backs up
+
+  research:
+    sessions: [research-worker-1]
+    model: claude
+    handles: [research, web search, general questions, analysis, investigate, look up]
+    queue_strategy: spawn
+    spawn_allowed: true
+    temp_ttl_minutes: 20
+    # research tasks are independent — always fine to spawn
+
+  support:
+    sessions: [support-worker-1, support-worker-2]
+    model: claude
+    handles: [support, ticket, customer, issue, help desk, escalation]
+    queue_strategy: queue_then_spawn
+    max_queue_depth: 1
+    spawn_allowed: true
+    temp_ttl_minutes: 20
+
+  data:
+    sessions: [data-worker-1]
+    model: claude
+    handles: [data, analytics, pipeline, report, metrics, dashboard]
+    queue_strategy: queue_then_spawn
+    max_queue_depth: 1
+    spawn_allowed: true
+    temp_ttl_minutes: 15
+
+  notifications:
+    sessions: [notify-worker-1]
+    model: claude
+    handles: [telegram, notification, alert, broadcast, scheduled report]
+    queue_strategy: queue
+    spawn_allowed: false
+    # notification tasks must use persistent worker — no temp workers
+
+# Temp worker spawn config
+# When spawning a temp worker, orchmux creates a new tmux session
+# named <domain>-temp-<timestamp> with this config
+spawn_config:
+  claude:
+    command: "claude --dangerously-skip-permissions"
+    config_dir: "~/orchmux/worker/{domain}/.claude"
+    window_name: "{domain}-temp-{ts}"
+  codex:
+    command: "codex"
+    config_dir: null
+    window_name: "{domain}-temp-{ts}"
+  kimi:
+    command: "kimi"
+    config_dir: null
+    window_name: "{domain}-temp-{ts}"
+
+# Non-LLM persistent processes — monitor only, never dispatch tasks to these
+_protected:
+  orchmux-telegram:
+    type: telegram_bot
+    note: Telegram bot process — polling getUpdates, do not dispatch tasks here
+  orchmux-watcher:
+    type: shell
+    note: orchmux file watcher — monitors queue files for new tasks
+  orchmux-supervisor:
+    type: orchestrator
+    note: orchmux supervisor — the orchestrator itself, never a worker target

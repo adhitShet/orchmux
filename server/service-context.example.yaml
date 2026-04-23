@@ -1,0 +1,50 @@
+# orchmux service context — example configuration
+# Copy this to service-context.yaml and fill in your credentials.
+# This file IS committed. service-context.yaml is gitignored.
+#
+# When a worker task mentions a keyword (e.g. "metabase", "slack"),
+# the matching snippet is prepended to the task so the worker has
+# the right credentials without you having to repeat them every time.
+
+# metabase: |
+#   ## Metabase Access
+#   - URL: http://YOUR_METABASE_HOST:3000
+#   - API key: mb_YOUR_API_KEY_HERE
+#   - DB ID 1 = your main database
+
+# snowflake: |
+#   ## Snowflake Access
+#   - Account: your-account.snowflakecomputing.com
+#   - User: YOUR_USER  Password: YOUR_PASSWORD
+
+# slack: |
+#   ## Slack Access
+#   - SLACK_BOT_TOKEN env var must be set
+#   - Key user IDs: Alice=U012345ABC, Bob=U678901DEF
+#   - Always use <@USER_ID> format — plain @Name won't notify
+
+# postgres: |
+#   ## PostgreSQL Access
+#   - prod: host=prod-db.internal port=5432 user=app pass=SECRET dbname=myapp
+#   - staging: host=staging-db.internal port=5432 user=app pass=SECRET
+
+# aws: |
+#   ## AWS Access
+#   - prod profile: account 123456789, key AKIAXXXXXXXXXXXXXXXXX
+#   - kubectl: --context arn:aws:eks:us-east-1:123456789:cluster/my-cluster
+
+# deploy: |
+#   ## Deploy Rules
+#   - NEVER deploy directly to production — always staging first
+#   - Run: ./scripts/deploy-staging.sh → verify → ./scripts/promote.sh
+
+# git: |
+#   ## Git Workflow
+#   - Always create feature branches, never commit directly to main
+#   - Run git diff --stat before every commit
+
+# nvidia: |
+#   ## NVIDIA NIM API
+#   - Base URL: https://integrate.api.nvidia.com/v1
+#   - API Key: nvapi-YOUR_KEY_HERE
+#   - Model catalog: https://build.nvidia.com/models

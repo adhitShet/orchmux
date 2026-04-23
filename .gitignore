@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.venv/
+*.log
+queue/*.yaml
+results/*.yaml
+logs/
+supervisor/.claude/.credentials.json
+supervisor/.claude/settings.json
+supervisor/.claude/history.jsonl
+worker-configs/
+worker-workdirs/
+session-ids/
+server/service-context.yaml
+memory.md
