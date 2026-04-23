@@ -1399,6 +1399,7 @@ async def worker_details(token: str = ""):
                 "last_task_status": last_task_status,
                 "last_task_time": last_task_time,
                 "domain": domain,
+                "handles": cfg.get("handles", []),
             }
     # Merge in display names / roles / slack_target from meta
     meta = _load_worker_meta()
@@ -2938,20 +2939,27 @@ async function saveMeta(){{
     msg.style.color='#e57373'; msg.textContent='⚠️ Network error';
   }}
 }}
-const _DKW={{
-  support:['support ticket','customer','escalation','refund','bug report'],
-  finance:['revenue','receivable','metabase','snowflake','payment','finance','invoice','margin','reconcil'],
-  research:['research','look up','find out','summarize','competitive','analysis'],
-  security:['security','vulnerability','audit','breach','2fa','compliance'],
-  legal:['legal','patent','litigation','contract','compliance'],
-  pr_review:['pr review','pull request','code review','diff','merge'],
-  data:['analytics','data audit','pipeline','report','query','snowflake','metabase'],
-  research:['research','search for','find out','look up','investigate'],
-}};
+let _DKW={{}};
+let _DKW_DEFAULT='';
+async function _loadDomainKeywords(){{
+  try{{
+    const wd=await fetch('/worker-details{qa}').then(r=>r.json());
+    const map={{}};
+    let first='';
+    for(const w of (wd||[])){{
+      if(!w.domain||w.domain.startsWith('_'))continue;
+      if(!first)first=w.domain;
+      if(w.handles&&w.handles.length)map[w.domain]=w.handles;
+    }}
+    _DKW=map;
+    _DKW_DEFAULT=first;
+  }}catch(e){{}}
+}}
+_loadDomainKeywords();
 function _detectDomain(txt){{
-  const ml=txt.toLowerCase();let best='research',bv=0;
+  const ml=txt.toLowerCase();let best='',bv=0;
   for(const [d,kws] of Object.entries(_DKW)){{const sc=kws.filter(k=>ml.includes(k)).length;if(sc>bv){{bv=sc;best=d;}}}}
-  return bv>0?best:'research';
+  return best||_DKW_DEFAULT;
 }}
 function dmTaskInput(val){{
   const domain=_detectDomain(val);
