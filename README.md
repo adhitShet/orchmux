@@ -227,6 +227,93 @@ For fully self-hosted/no-Tailscale-cloud setups, use [Headscale](https://github.
 
 ---
 
+## Getting started (first time)
+
+### Step 1 — Install dependencies
+
+```bash
+# tmux (if not already installed)
+sudo apt install tmux        # Debian/Ubuntu
+brew install tmux            # macOS
+
+# Claude Code CLI
+npm install -g @anthropic-ai/claude-code
+
+# Python
+python3 -m venv .venv && source .venv/bin/activate
+pip install fastapi uvicorn pyyaml
+```
+
+### Step 2 — Clone and configure
+
+```bash
+git clone https://github.com/adhitShet/orchmux.git
+cd orchmux
+
+# Environment (Telegram + bind address)
+cp .env.example .env.local
+# Edit .env.local if you want Telegram or a specific bind IP
+
+# Worker domains — defines what sessions orchmux manages
+cp workers.yaml.example workers.yaml
+```
+
+### Step 3 — Create your first worker session
+
+orchmux manages **named tmux sessions**. Each session is a worker. Create one:
+
+```bash
+# Create a new tmux session named "eng-worker-1"
+tmux new-session -d -s eng-worker-1
+
+# Start Claude Code inside it (with permissions auto-accepted)
+tmux send-keys -t eng-worker-1 "claude --dangerously-skip-permissions" Enter
+```
+
+Then register it in `workers.yaml`:
+
+```yaml
+workers:
+  engineering:
+    sessions: [eng-worker-1]
+    model: claude
+    handles: [refactor, fix, implement, test]
+    queue_strategy: queue
+```
+
+### Step 4 — Start orchmux
+
+```bash
+bash orchmux.sh
+```
+
+Open the dashboard: `http://localhost:9889/dashboard` (or your Tailscale IP).
+
+You should see `eng-worker-1` appear as **idle** in the worker list.
+
+### Step 5 — Dispatch your first task
+
+From the dashboard dispatch bar, type a task and hit **Dispatch**:
+
+```
+Refactor the login function in src/auth.py to use bcrypt
+```
+
+orchmux routes it to `eng-worker-1`, injects the task, and starts streaming output in the Live tab. When Claude finishes and prints `[DONE]`, the watcher picks it up and marks the task complete.
+
+### Does orchmux pick up existing sessions?
+
+Yes. If you already have tmux sessions running Claude Code, just list them in `workers.yaml` under the right domain. orchmux discovers sessions by name — it doesn't create them unless `spawn_allowed: true`.
+
+```bash
+# See your existing sessions
+tmux ls
+```
+
+Any session name you add to `workers.yaml` will appear in the dashboard immediately on next poll.
+
+---
+
 ## Installation
 
 ### Prerequisites
@@ -240,7 +327,7 @@ For fully self-hosted/no-Tailscale-cloud setups, use [Headscale](https://github.
 | Tailscale (optional) | Secure remote access over VPN |
 | Telegram bot token (optional) | Telegram notifications + dispatch |
 
-### Quick start
+### Full setup
 
 ```bash
 # 1. Clone
@@ -261,13 +348,13 @@ cp .env.example .env.local
 
 # 4. Workers config
 cp workers.yaml.example workers.yaml
-# Edit workers.yaml — define your domains and worker session names
+# Edit workers.yaml — define your domains and session names
 
 # 5. Service context (credentials for smart injection — never committed)
 cp server/service-context.example.yaml server/service-context.yaml
 # Edit service-context.yaml with your credentials
 
-# 6. (Optional) TLS cert
+# 6. (Optional) TLS cert for HTTPS
 openssl req -x509 -newkey rsa:2048 -days 3650 -nodes \
   -subj "/CN=orchmux" \
   -addext "subjectAltName=IP:YOUR_TAILSCALE_IP" \
