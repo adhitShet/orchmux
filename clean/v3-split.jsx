@@ -31,14 +31,22 @@ if (!document.getElementById('clean-pane-styles')) {
 }
 
 // ── Domain detection ────────────────────────────────────────────────────────
-const _DKW = {
-  cx:      ['cx','zendesk','ticket','support','customer','chat','escalat','whatsapp'],
-  finance: ['finance','revenue','stripe','metabase','mrr','arr','invoice','billing','q4','q3','q2','q1','mis'],
-  data:    ['data','sql','dbt','snowflake','query','cohort','churn','report','analytics'],
-  research:['research','competitor','pricing','market','teardown','scrape','gather'],
-  code:    ['code','pr','pull request','deploy','staging','bug','fix','refactor','test','fastapi','react'],
-  legal:   ['legal','contract','clause','redline','msa','compliance','patent'],
-};
+let _DKW = {};
+let _DKW_DEFAULT = '';
+(async () => {
+  try {
+    const wd = await fetch('/worker-details').then(r => r.json());
+    const map = {};
+    let first = '';
+    for (const w of Object.values(wd || {})) {
+      if (!w.domain || w.domain.startsWith('_')) continue;
+      if (!first) first = w.domain;
+      if (w.handles && w.handles.length) map[w.domain] = w.handles;
+    }
+    _DKW = map;
+    _DKW_DEFAULT = first;
+  } catch(e) {}
+})();
 function _detectDomain(text) {
   if (!text) return '';
   const lo = text.toLowerCase();
@@ -46,7 +54,7 @@ function _detectDomain(text) {
   for (const [dom, kws] of Object.entries(_DKW))
     scores[dom] = kws.reduce((n,k) => n+(lo.includes(k)?1:0), 0);
   const best = Object.entries(scores).sort((a,b)=>b[1]-a[1])[0];
-  return (best && best[1] > 0) ? best[0] : '';
+  return (best && best[1] > 0) ? best[0] : _DKW_DEFAULT;
 }
 
 // ── Dispatch panel (left bottom) ────────────────────────────────────────────
