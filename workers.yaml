@@ -11,7 +11,7 @@
 workers:
 
   engineering:
-    sessions: [eng-worker-1, eng-worker-2, eng-worker-3]
+    sessions: [eng-worker-1]        # add more sessions here as you scale up
     model: claude
     handles: [bug fix, deploy, code review, pull request, API, backend, frontend, database]
     queue_strategy: queue_then_spawn
@@ -20,40 +20,29 @@ workers:
     temp_ttl_minutes: 30
     # engineering tasks need context — prefer persistent workers, spawn only if queue backs up
 
-  research:
-    sessions: [research-worker-1]
-    model: claude
-    handles: [research, web search, general questions, analysis, investigate, look up]
-    queue_strategy: spawn
-    spawn_allowed: true
-    temp_ttl_minutes: 20
-    # research tasks are independent — always fine to spawn
-
-  support:
-    sessions: [support-worker-1, support-worker-2]
-    model: claude
-    handles: [support, ticket, customer, issue, help desk, escalation]
-    queue_strategy: queue_then_spawn
-    max_queue_depth: 1
-    spawn_allowed: true
-    temp_ttl_minutes: 20
-
-  data:
-    sessions: [data-worker-1]
-    model: claude
-    handles: [data, analytics, pipeline, report, metrics, dashboard]
-    queue_strategy: queue_then_spawn
-    max_queue_depth: 1
-    spawn_allowed: true
-    temp_ttl_minutes: 15
-
-  notifications:
-    sessions: [notify-worker-1]
-    model: claude
-    handles: [telegram, notification, alert, broadcast, scheduled report]
-    queue_strategy: queue
-    spawn_allowed: false
-    # notification tasks must use persistent worker — no temp workers
+  # Uncomment and expand as you add more workers:
+  #
+  # research:
+  #   sessions: [research-worker-1]
+  #   model: claude
+  #   handles: [research, web search, analysis, investigate, look up]
+  #   queue_strategy: spawn
+  #   spawn_allowed: true
+  #   temp_ttl_minutes: 20
+  #
+  # data:
+  #   sessions: [data-worker-1]
+  #   model: claude
+  #   handles: [data, analytics, pipeline, report, metrics, dashboard]
+  #   queue_strategy: queue_then_spawn
+  #   spawn_allowed: true
+  #
+  # support:
+  #   sessions: [support-worker-1]
+  #   model: claude
+  #   handles: [support, ticket, customer, issue, escalation]
+  #   queue_strategy: queue
+  #   spawn_allowed: false
 
 # Temp worker spawn config
 # When spawning a temp worker, orchmux creates a new tmux session
@@ -61,7 +50,7 @@ workers:
 spawn_config:
   claude:
     command: "claude --dangerously-skip-permissions"
-    config_dir: "~/orchmux/worker/{domain}/.claude"
+    config_dir: "{orchmux_dir}/worker/{domain}/.claude"
     window_name: "{domain}-temp-{ts}"
   codex:
     command: "codex"

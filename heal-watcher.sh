@@ -2,7 +2,7 @@
 # Auto-heal orchmux-watcher — run via cron every 2 minutes
 # This is the external safety net since the watcher can't restart itself.
 
-ORCHMUX="$HOME/orchmux"
+ORCHMUX="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SESSION="orchmux-watcher"
 
 # Check if session exists and watcher process is alive inside it

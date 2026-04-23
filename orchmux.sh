@@ -2,7 +2,7 @@
 # orchmux.sh — launch/stop the orchmux system
 set -euo pipefail
 
-ORCHMUX_DIR="$HOME/orchmux"
+ORCHMUX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVER_URL="http://localhost:9889/health"
 WATCHER_PIDS="/tmp/orchmux-watchers.pid"
 QUEUE_DIR="$ORCHMUX_DIR/queue"
@@ -28,8 +28,8 @@ if [[ "${1:-start}" == "stop" ]]; then
   while IFS= read -r session; do
     tmux_ok "$session" && tmux kill-session -t "$session" && echo "  worker $session killed"
   done < <(get_sessions)
-  if [[ -d "$HOME/orchmux/worker-workdirs" ]]; then
-    rm -rf "$HOME/orchmux/worker-workdirs"
+  if [[ -d "$ORCHMUX_DIR/worker-workdirs" ]]; then
+    rm -rf "$ORCHMUX_DIR/worker-workdirs"
     echo "  worker-workdirs cleaned up"
   fi
   echo "orchmux stopped"; exit 0
@@ -109,9 +109,16 @@ tmux_ok orchmux-watcher || \
        sleep 3
      done"
 
-# ── 4. inotifywait watchers ────────────────────────────────────────────────────
+# ── 4. inotifywait watchers (Linux only) ──────────────────────────────────────
+# inotifywait is Linux-only. On macOS, queue-file nudges are disabled — workers
+# will still pick up queued tasks on the next watcher poll (every 5s), just
+# without the instant push. Install inotify-tools on Linux for real-time dispatch.
 if ! command -v inotifywait >/dev/null 2>&1; then
-  echo "  WARNING: inotifywait not found — queue watchers disabled (apt install inotify-tools)"
+  if [[ "$(uname)" == "Darwin" ]]; then
+    echo "  NOTE: inotifywait not available on macOS — queue nudges disabled (tasks still poll every 5s)"
+  else
+    echo "  WARNING: inotifywait not found — queue watchers disabled (apt install inotify-tools)"
+  fi
 else
   mkdir -p "$QUEUE_DIR"
   [[ -f "$WATCHER_PIDS" ]] && { xargs kill 2>/dev/null < "$WATCHER_PIDS" || true; rm -f "$WATCHER_PIDS"; }
@@ -198,4 +205,4 @@ echo "  monitor:    tmux a -t orchmux-monitor"
 echo "  telegram:   tmux a -t orchmux-telegram"
 echo "  server:     $SERVER_URL"
 echo "  workers:    $n registered"
-echo "  worker configs: ~/orchmux/worker-configs/ (restart sessions to apply)"
+echo "  worker configs: $ORCHMUX_DIR/worker-configs/ (restart sessions to apply)"

@@ -6,12 +6,12 @@ You are a **notifications** worker in the orchmux multi-agent system.
 
 When you see a tmux comment like:
 ```
-# orchmux:{task_id} — task file: ~/orchmux/queue/{session}.yaml
+# orchmux:{task_id} — task file: $ORCHMUX_DIR/queue/{session}.yaml
 ```
 
 Read the task file (use the exact path from the comment):
 ```bash
-cat ~/orchmux/queue/<your-session-name>.yaml
+cat $ORCHMUX_DIR/queue/<your-session-name>.yaml
 ```
 The YAML contains: `task_id`, `task`, `context`, `session`, `domain`, `report_to`.
 

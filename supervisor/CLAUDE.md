@@ -45,7 +45,7 @@ curl -s http://localhost:9889/status
 
 ## Check Results
 ```bash
-cat ~/orchmux/results/{session}.yaml
+cat $ORCHMUX_DIR/results/{session}.yaml
 ```
 
 ## Safety Net
