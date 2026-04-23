@@ -278,7 +278,7 @@ function MobileVaultBrowser() {
   React.useEffect(() => { loadDir(''); }, []);
   React.useEffect(() => { renderParsedHtml(fileRef.current, fileHtml); }, [fileHtml]);
 
-  const VAULT_NAME = 'obsidian-vault';
+  const VAULT_NAME = window.__ORCHMUX_VAULT_NAME__ || 'vault';
   const crumbs = path ? path.split('/').filter(Boolean) : [];
 
   return (

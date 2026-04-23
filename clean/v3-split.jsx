@@ -713,7 +713,7 @@ function MetaModal({worker, onClose}) {
 }
 
 // ── Vault file card (WhatsApp-style inline preview) ─────────────────────────
-const VAULT_NAME    = 'obsidian-vault';
+const VAULT_NAME    = window.__ORCHMUX_VAULT_NAME__ || 'vault';
 // No external Obsidian editor — inline edit writes directly to vault, Obsidian Sync propagates
 
 function useVaultFile(vaultPath) {
@@ -826,9 +826,10 @@ function useVaultCards(rawText) {
   React.useEffect(() => {
     if (!rawText) { setCards([]); return; }
     const found = new Set();
-    const pathHits = rawText.match(/(?:~\/)?obsidian-vault\/([^\s\)"'`\]]+\.md)/g) || [];
+    const vaultPat = new RegExp('(?:~\\/)?(?:obsidian-vault|vault)\\/([^\\s\\)"\'`\\]]+\\.md)', 'g');
+    const pathHits = rawText.match(vaultPat) || [];
     pathHits.forEach(m => {
-      const p = m.replace(/^(?:~\/)?obsidian-vault\//, '');
+      const p = m.replace(/^(?:~\/)?(?:obsidian-vault|vault)\//, '');
       if (p) found.add(p);
     });
     const linkHits = rawText.match(/obsidian:\/\/open\?[^"'\s]*file=[^&"'\s]+/g) || [];
@@ -883,9 +884,9 @@ function _extractLinks(text) {
     const ctx = line.trim().slice(0, 80);
 
     // Full vault paths
-    const fullHits = line.match(/(?:~\/)?obsidian-vault\/([^\s\)"'`\]]+\.md)/g) || [];
+    const fullHits = line.match(/(?:~\/)?(?:obsidian-vault|vault)\/([^\s\)"'`\]]+\.md)/g) || [];
     fullHits.forEach(m => {
-      const p = m.replace(/^(?:~\/)?obsidian-vault\//, '');
+      const p = m.replace(/^(?:~\/)?(?:obsidian-vault|vault)\//, '');
       if (p && !vaultMap.has(p)) vaultMap.set(p, {path:p, context:ctx});
     });
 

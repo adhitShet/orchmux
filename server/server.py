@@ -1470,8 +1470,13 @@ async def dashboard(token: str = "", ui: str = ""):
     if ui != "legacy":
         html_path = _CLEAN_DIR / "orchmux-clean.html"
         if html_path.exists():
-            return HTMLResponse(content=html_path.read_text())
+            return HTMLResponse(content=_inject_vault_config(html_path.read_text()))
     return HTMLResponse(content=_build_dashboard(token))
+
+
+def _inject_vault_config(html: str) -> str:
+    snippet = f'<script>window.__ORCHMUX_VAULT_NAME__={json.dumps(VAULT_NAME)};</script>'
+    return html.replace("</head>", f"{snippet}</head>", 1)
 
 
 @app.get("/dashboard/clean")
@@ -1481,7 +1486,7 @@ async def clean_dashboard(token: str = ""):
     html_path = _CLEAN_DIR / "orchmux-clean.html"
     if not html_path.exists():
         raise HTTPException(404, "Clean UI not found — run the integration step first")
-    return HTMLResponse(content=html_path.read_text())
+    return HTMLResponse(content=_inject_vault_config(html_path.read_text()))
 
 
 def _build_dashboard(token: str = "") -> str:  # noqa: E501
