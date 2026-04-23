@@ -281,6 +281,17 @@ workers:
     queue_strategy: queue
 ```
 
+### Step 3b — Point orchmux at your vault (optional)
+
+Workers can push markdown documents (summaries, runbooks, analysis) into a browsable Vault. By default orchmux creates `~/vault/` for this. To use an existing Obsidian vault or any other folder, set `ORCHMUX_VAULT` before starting:
+
+```bash
+# In orchmux/.env  (gitignored — create it if it doesn't exist)
+ORCHMUX_VAULT=/Users/you/Documents/Obsidian/MyVault
+```
+
+If you skip this, a fresh `~/vault/` folder is created automatically and everything works fine.
+
 ### Step 4 — Start orchmux
 
 ```bash

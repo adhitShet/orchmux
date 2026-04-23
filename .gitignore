@@ -13,3 +13,4 @@ worker-workdirs/
 session-ids/
 server/service-context.yaml
 memory.md
+.env

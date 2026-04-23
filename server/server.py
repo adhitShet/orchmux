@@ -813,8 +813,8 @@ async def infra_status(token: str = ""):
     return result
 
 
-VAULT_ROOT = Path.home() / "obsidian-vault"
-VAULT_NAME = "obsidian-vault"  # must match the vault name in Obsidian app
+VAULT_ROOT = Path(os.environ.get("ORCHMUX_VAULT", str(Path.home() / "vault")))
+VAULT_NAME = VAULT_ROOT.name
 
 @app.get("/vault/ls")
 async def vault_ls(path: str = "", token: str = ""):
@@ -1221,7 +1221,7 @@ async def session_notes(session: str, token: str = ""):
     if not _check_token(token):
         from fastapi.responses import Response
         return Response(status_code=403)
-    obsidian = Path.home() / "obsidian-vault" / "AI-Systems" / "Claude-Logs" / "Sessions"
+    obsidian = VAULT_ROOT / "AI-Systems" / "Claude-Logs" / "Sessions"
     matches = []
     if obsidian.exists():
         for f in sorted(obsidian.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True):

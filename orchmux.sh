@@ -35,11 +35,16 @@ if [[ "${1:-start}" == "stop" ]]; then
   echo "orchmux stopped"; exit 0
 fi
 
-# ── Load Telegram env ──────────────────────────────────────────────────────────
+# ── Load local env (Telegram token, vault path, optional token) ───────────────
 TG_ENV="$HOME/.claude/hooks/.env"
-if [[ -f "$TG_ENV" ]]; then
-  export $(grep -v '^#' "$TG_ENV" | xargs) 2>/dev/null || true
-fi
+ORCHMUX_ENV="$ORCHMUX_DIR/.env"
+for _env in "$TG_ENV" "$ORCHMUX_ENV"; do
+  [[ -f "$_env" ]] && export $(grep -v '^#' "$_env" | xargs) 2>/dev/null || true
+done
+
+# Default vault to ~/vault if not set; create it so workers can write on first run
+export ORCHMUX_VAULT="${ORCHMUX_VAULT:-$HOME/vault}"
+mkdir -p "$ORCHMUX_VAULT"
 
 # ── Tailscale bind: dashboard only reachable on VPN, never public internet ─────
 # ip addr show is Linux-only; fall back to ifconfig on macOS
