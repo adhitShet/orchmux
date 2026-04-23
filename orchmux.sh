@@ -49,9 +49,9 @@ mkdir -p "$ORCHMUX_VAULT"
 # ── Tailscale bind: dashboard only reachable on VPN, never public internet ─────
 # ip addr show is Linux-only; fall back to ifconfig on macOS
 if command -v ip >/dev/null 2>&1; then
-  TAILSCALE_IP=$(ip addr show tailscale0 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1)
+  TAILSCALE_IP=$(ip addr show tailscale0 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1) || true
 else
-  TAILSCALE_IP=$(ifconfig tailscale0 2>/dev/null | awk '/inet /{print $2}')
+  TAILSCALE_IP=$(ifconfig tailscale0 2>/dev/null | awk '/inet /{print $2}') || true
 fi
 if [[ -n "$TAILSCALE_IP" ]]; then
   export ORCHMUX_BIND_HOST="$TAILSCALE_IP"

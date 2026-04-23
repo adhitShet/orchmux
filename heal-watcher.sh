@@ -18,9 +18,9 @@ else
     # Session dead — recreate it
     source "$HOME/.claude/hooks/.env" 2>/dev/null || true
     if command -v ip >/dev/null 2>&1; then
-      BIND=$(ip addr show tailscale0 2>/dev/null | grep -oP 'inet \K[\d.]+' | head -1)
+      BIND=$(ip addr show tailscale0 2>/dev/null | grep -oP 'inet \K[\d.]+' | head -1) || true
     else
-      BIND=$(ifconfig tailscale0 2>/dev/null | awk '/inet /{print $2}')
+      BIND=$(ifconfig tailscale0 2>/dev/null | awk '/inet /{print $2}') || true
     fi
     export ORCHMUX_BIND_HOST="${BIND:-127.0.0.1}"
     tmux new-session -d -s "$SESSION" -c "$ORCHMUX"
