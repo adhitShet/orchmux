@@ -8,6 +8,7 @@ import asyncio
 import json
 import os
 import random
+import sys
 import threading
 import subprocess
 import time
@@ -16,6 +17,14 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+
+# orchmux lib modules
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from lib.timeline import timeline_write, timeline_recent
+from lib.costs import cost_record, cost_summary
+from lib.preflight import preflight_check
+from lib.notify import notify as _notify_channel
+from lib.model_health import record_failure, record_success, is_healthy, get_fallback, health_summary as _model_health_summary
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
@@ -37,6 +46,28 @@ for d in [QUEUE_DIR, RESULTS_DIR, LOGS_DIR]:
     d.mkdir(exist_ok=True)
 
 
+def _domain_model(domain: str) -> str:
+    """Return the model configured for a domain, defaults to 'claude'."""
+    try:
+        cfg = load_config()
+        return cfg.get("workers", {}).get(domain, {}).get("model", "claude")
+    except Exception:
+        return "claude"
+
+
+def _parse_dispatched_at(task_id: str) -> float | None:
+    """Return dispatch epoch from task_registry, or None."""
+    try:
+        ts = task_registry.get(task_id, {}).get("dispatched_at", "")
+        if ts:
+            from datetime import timezone
+            dt = datetime.fromisoformat(ts.rstrip("Z"))
+            return dt.replace(tzinfo=timezone.utc).timestamp()
+    except Exception:
+        pass
+    return None
+
+
 def load_config():
     with open(WORKERS_CONFIG) as f:
         return yaml.safe_load(f)
@@ -52,6 +83,10 @@ _completed: list[dict] = []        # last 10 completed tasks
 _drain_lock = threading.Lock()     # prevents concurrent queue drains
 _supervisor_inbox: list[str] = []  # completions queued for supervisor
 _notified_task_ids: set[str] = set()  # task_ids already queued for supervisor
+
+# ── Codex permission approval store ───────────────────────────────────────
+_pending_permissions: dict[str, dict] = {}   # id → {session, command, reason, ts}
+_permission_decisions: dict[str, bool] = {}  # id → True=approved, False=denied
 
 # ── Persistent queue + dispatch history ───────────────────────────────────
 _QUEUE_FILE   = QUEUE_DIR / "_pending_queue.json"
@@ -182,26 +217,53 @@ def make_task_id(domain: str) -> str:
     return f"{domain}-{int(time.time() * 1000)}-{random.randint(100, 999)}"
 
 
-# ── Wait for Claude Code prompt ────────────────────────────────────────────
-_BUSY_MARKERS = ("esc to interrupt",)   # checked against raw pane (reliable active signal)
+# ── Model-aware prompt detection ───────────────────────────────────────────
+_BUSY_MARKERS  = ("esc to interrupt",)
 _NOISE_MARKERS = ("bypass permissions", "shift+tab", "⏵⏵", "Claude Code", "Sonnet", "Opus")
 
+# Codex/Kimi idle signals — lines that appear only when the CLI is waiting for input
+_CODEX_IDLE_SIGNS  = ("gpt-5", "gpt-4",)   # status bar: "  gpt-5.5 high · ~/path"
+_CODEX_IDLE_PROMPT = "›"                    # also: "› " input prefix
+_KIMI_IDLE_SIGNS   = ("kimi",)
+_KIMI_IDLE_PROMPT  = "›"
+
+def _session_model(session: str) -> str:
+    """Return 'claude', 'codex', or 'kimi' for a given session."""
+    cfg = load_config()
+    for domain, dcfg in cfg.get("workers", {}).items():
+        if session in dcfg.get("sessions", []):
+            return dcfg.get("model", "claude")
+    return "claude"
+
+def _is_idle_for_model(last_line: str, model: str, raw_pane: str) -> bool:
+    """True if the pane looks like it's at an idle prompt for the given model."""
+    if model == "codex":
+        return (last_line.startswith(_CODEX_IDLE_PROMPT)
+                or any(s in last_line for s in _CODEX_IDLE_SIGNS))
+    if model == "kimi":
+        return (last_line.startswith(_KIMI_IDLE_PROMPT)
+                or any(s in last_line for s in _KIMI_IDLE_SIGNS))
+    # claude (default)
+    return last_line.startswith("❯")
+
 async def _wait_for_prompt(session: str, timeout: int = 30):
-    """Wait until Claude Code's ❯ is the last non-noise line and Claude isn't running."""
+    """Wait until the model CLI is idle (prompt visible) before sending a task."""
+    model = _session_model(session)
     for _ in range(timeout * 2):
         r = tmux(["capture-pane", "-t", session, "-p", "-S", "-8"])
         raw = r.stdout
-        # If esc to interrupt is present, Claude is definitely running
         if any(m in raw for m in _BUSY_MARKERS):
             await asyncio.sleep(0.5)
             continue
-        # Filter status bar / UI noise before checking for prompt
         lines = [l for l in raw.splitlines()
                  if l.strip() and not any(n in l for n in _NOISE_MARKERS)
-                 and not all(c in "─━═ " for c in l.strip())]
+                 and not all(c in "─━═╌│╭╮╰╯ " for c in l.strip())]
         last = lines[-1].strip() if lines else ""
-        if last.startswith("❯"):
-            await asyncio.sleep(0.3)  # brief settle
+        # Also scan all lines — bypass-permissions UI can push ❯/› off the last position
+        any_idle = any(_is_idle_for_model(l.strip(), model, raw)
+                       for l in raw.splitlines() if l.strip())
+        if _is_idle_for_model(last, model, raw) or any_idle:
+            await asyncio.sleep(0.3)
             return
         await asyncio.sleep(0.5)
     log(f"[warn] {session} prompt wait timed out, sending anyway")
@@ -342,7 +404,7 @@ async def dispatch_to(session: str, task_id: str, task: str,
         "context": context or "", "status": "pending",
         "session": session,
         "dispatched_at": datetime.utcnow().isoformat(),
-        "report_to": f"{_SCHEME}://{BIND_HOST}:9889/complete",
+        "report_to": f"http://127.0.0.1:9889/complete",
         "pane_baseline": pre_pane[-2000:] if pre_pane else "",  # last 2KB of pre-dispatch output
     }
     task_file = QUEUE_DIR / f"{session}.yaml"
@@ -360,6 +422,10 @@ async def dispatch_to(session: str, task_id: str, task: str,
         "task": task, "status": "running",
         "dispatched_at": datetime.utcnow().isoformat()
     }
+
+    # Timeline: record dispatch event
+    _model = _domain_model(domain)
+    timeline_write(session, "dispatched", task_id=task_id, domain=domain, model=_model)
 
     # Escape lines starting with / so Claude Code doesn't interpret them as slash commands
     safe_task = "\n".join(
@@ -388,7 +454,7 @@ def spawn_temp(session_name: str, domain: str, model: str) -> bool:
     spawn_cfg = config.get("spawn_config", {}).get(model, {})
     command = spawn_cfg.get("command", "claude --dangerously-skip-permissions")
 
-    # Use worker-workdirs for cwd (CLAUDE.md auto-discovered); no CLAUDE_CONFIG_DIR (avoids re-login)
+    # Use worker-workdirs for cwd; copy the right instructions file per model
     work_dir = ROOT / "worker-workdirs" / session_name
     if not work_dir.exists():
         work_dir.mkdir(parents=True)
@@ -396,6 +462,9 @@ def spawn_temp(session_name: str, domain: str, model: str) -> bool:
         if worker_md.exists():
             import shutil
             shutil.copy2(str(worker_md), str(work_dir / "CLAUDE.md"))
+            # Codex reads AGENTS.md; Kimi reads AGENTS.md — mirror instructions
+            if model in ("codex", "kimi"):
+                shutil.copy2(str(worker_md), str(work_dir / "AGENTS.md"))
 
     try:
         tmux(["new-session", "-d", "-s", session_name,
@@ -446,6 +515,11 @@ async def dispatch(req: DispatchRequest):
         return {"task_id": task_id, "session": req.session,
                 "status": "dispatched", "worker_type": "direct" if not req.force else "force"}
 
+    # Pre-dispatch skill readiness check
+    _ok, _issues = preflight_check(req.domain or "")
+    if not _ok:
+        raise HTTPException(412, f"preflight failed for '{req.domain}': {'; '.join(_issues)}")
+
     domain_cfg = workers_cfg.get(req.domain)
     if not domain_cfg:
         raise HTTPException(404, f"Unknown domain: {req.domain}")
@@ -453,6 +527,13 @@ async def dispatch(req: DispatchRequest):
     task_id = make_task_id(req.domain)
     strategy = domain_cfg.get("queue_strategy", "queue")
     model = domain_cfg.get("model", "claude")
+
+    # Model health: if primary model is in cooldown, try its fallback
+    if not is_healthy(model):
+        fallback = get_fallback(model, ROOT / "workers.yaml")
+        if fallback and fallback != model:
+            log(f"[dispatch] {model} in cooldown — using fallback {fallback}")
+            model = fallback
 
     protected = config.get("_protected", {})
     for s in domain_cfg.get("sessions", []):
@@ -565,10 +646,29 @@ async def complete(req: CompleteRequest):
             pass
 
     if not already_done:
+        _domain  = task_registry.get(req.task_id, {}).get("domain", "?")
+        _model   = _domain_model(_domain)
+        _disp_ts = _parse_dispatched_at(req.task_id)
+        _dur     = round(time.time() - _disp_ts, 1) if _disp_ts else None
+
+        # Timeline + cost tracking
+        timeline_write(req.session, "completed", task_id=req.task_id,
+                       domain=_domain, model=_model,
+                       duration_s=_dur, result_summary=req.result[:120],
+                       success=req.success)
+        cost_record(req.task_id, _domain, req.session, _model,
+                    _dur or 0.0, len(req.result), req.success)
+
+        # Model health: track per-model success/failure for cooldown logic
+        if req.success:
+            record_success(_model)
+        else:
+            record_failure(_model)
+
         _completed.insert(0, {
             "task_id": req.task_id,
             "session": req.session,
-            "domain": task_registry.get(req.task_id, {}).get("domain", "?"),
+            "domain": _domain,
             "task": task_registry.get(req.task_id, {}).get("task", "")[:60],
             "result": req.result[:120],
             "success": req.success,
@@ -811,8 +911,17 @@ async def infra_status(token: str = ""):
     return result
 
 
-VAULT_ROOT = Path(os.environ.get("ORCHMUX_VAULT", str(Path.home() / "vault")))
+VAULT_ROOT = Path(os.environ.get("ORCHMUX_VAULT", str(Path.home() / "obsidian-vault")))
 VAULT_NAME = VAULT_ROOT.name
+_NOTES_PATH = "AI-Systems/Claude-Logs/Sessions"
+
+@app.get("/vault-info")
+async def vault_info():
+    return {
+        "vault_name": VAULT_NAME,
+        "vault_path": str(VAULT_ROOT),
+        "notes_path": _NOTES_PATH,
+    }
 
 @app.get("/vault/ls")
 async def vault_ls(path: str = "", token: str = ""):
@@ -908,24 +1017,200 @@ async def vault_export_doc(req: Request, token: str = ""):
         raise HTTPException(500, f"gws response parse error: {e}")
 
 
-@app.get("/todos")
-async def get_todos(token: str = ""):
-    if not _check_token(token):
-        from fastapi.responses import Response
-        return Response(status_code=403)
+_VAULT_TODOS = "AI-Systems/Orchmux/todos.md"
+
+def _sync_todos_to_vault(items: list):
+    try:
+        vault_path = VAULT_ROOT / _VAULT_TODOS
+        vault_path.parent.mkdir(parents=True, exist_ok=True)
+        open_items = [i for i in items if not i.get("done")]
+        done_items = [i for i in items if i.get("done")]
+        lines = [
+            "# Orchmux Todos",
+            f"_Updated: {datetime.now().strftime('%Y-%m-%d %H:%M')}_",
+            "",
+        ]
+        for i in open_items:
+            lines.append(f"- [ ] {i.get('text', '')}")
+        if done_items:
+            lines.append("")
+            lines.append("## Done")
+            for i in done_items:
+                lines.append(f"- [x] {i.get('text', '')}")
+        vault_path.write_text("\n".join(lines) + "\n")
+    except Exception:
+        pass
+
+def _load_todos() -> list:
     if _TODO_FILE.exists():
-        try: return json.loads(_TODO_FILE.read_text())
-        except Exception: pass
+        try:
+            items = json.loads(_TODO_FILE.read_text())
+            if items:
+                for it in items:
+                    it.setdefault("session", None)
+                return items
+        except Exception:
+            pass
+    # fallback: parse vault markdown
+    try:
+        import re as _re
+        vault_path = VAULT_ROOT / _VAULT_TODOS
+        if vault_path.exists():
+            items = []
+            for line in vault_path.read_text().splitlines():
+                m = _re.match(r'^- \[([ x])\] (.+)$', line)
+                if m:
+                    text = m.group(2).strip()
+                    items.append({"id": abs(hash(text)) % (10**9), "text": text,
+                                  "done": m.group(1) == "x", "session": None})
+            return items
+    except Exception:
+        pass
     return []
 
-@app.post("/todos")
-async def save_todos(req: Request, token: str = ""):
+def _save_todos(items: list):
+    _TODO_FILE.write_text(json.dumps(items))
+    _sync_todos_to_vault(items)
+
+@app.get("/todos")
+async def get_todos(token: str = "", session: Optional[str] = None):
     if not _check_token(token):
         from fastapi.responses import Response
         return Response(status_code=403)
-    items = await req.json()
-    _TODO_FILE.write_text(json.dumps(items))
+    items = _load_todos()
+    if session is None:
+        return items                              # no filter — return all
+    if session == "":
+        return [i for i in items if not i.get("session")]   # global only
+    return [i for i in items if i.get("session") == session]
+
+@app.post("/todos")
+async def create_or_replace_todos(req: Request, token: str = ""):
+    if not _check_token(token):
+        from fastapi.responses import Response
+        return Response(status_code=403)
+    body = await req.json()
+    # Legacy bulk-replace: body is a list
+    if isinstance(body, list):
+        for it in body:
+            it.setdefault("session", None)
+        _save_todos(body)
+        return {"ok": True}
+    # New single-item create
+    new_id = int(time.time() * 1000)
+    item = {"id": new_id, "text": body.get("text", ""), "done": bool(body.get("done", False)), "session": body.get("session", None)}
+    items = _load_todos()
+    items.append(item)
+    _save_todos(items)
+    return {"ok": True, "id": new_id}
+
+@app.patch("/todos/{todo_id}")
+async def update_todo(todo_id: int, req: Request, token: str = ""):
+    if not _check_token(token):
+        from fastapi.responses import Response
+        return Response(status_code=403)
+    body = await req.json()
+    items = _load_todos()
+    for it in items:
+        if it.get("id") == todo_id:
+            if "text"    in body: it["text"]    = body["text"]
+            if "done"    in body: it["done"]    = bool(body["done"])
+            if "session" in body: it["session"] = body["session"]
+            _save_todos(items)
+            return {"ok": True}
+    raise HTTPException(404, f"Todo {todo_id} not found")
+
+@app.delete("/todos/{todo_id}")
+async def delete_todo(todo_id: int, token: str = ""):
+    if not _check_token(token):
+        from fastapi.responses import Response
+        return Response(status_code=403)
+    items = _load_todos()
+    new_items = [it for it in items if it.get("id") != todo_id]
+    if len(new_items) == len(items):
+        raise HTTPException(404, f"Todo {todo_id} not found")
+    _save_todos(new_items)
     return {"ok": True}
+
+
+# ── Codex permission approval endpoints ───────────────────────────────────
+
+_PERMISSION_TTL_SECONDS = 600  # 10 minutes
+
+
+def _evict_expired_permissions():
+    """Remove permission entries older than TTL from both dicts."""
+    from datetime import timezone
+    now = datetime.now(timezone.utc).timestamp()
+    expired = [
+        pid for pid, entry in _pending_permissions.items()
+        if now - datetime.fromisoformat(entry["ts"]).timestamp() > _PERMISSION_TTL_SECONDS
+    ]
+    for pid in expired:
+        _pending_permissions.pop(pid, None)
+        _permission_decisions.pop(pid, None)
+
+
+class PermissionRequestBody(BaseModel):
+    id: str
+    session: str
+    command: str
+    reason: str = ""
+
+
+class PermissionDecisionBody(BaseModel):
+    approved: bool
+
+
+@app.post("/permission-request")
+async def post_permission_request(body: PermissionRequestBody):
+    """Codex hook posts here when it needs approval for a command."""
+    from datetime import timezone
+    _pending_permissions[body.id] = {
+        "session": body.session,
+        "command": body.command,
+        "reason": body.reason,
+        "ts": datetime.now(timezone.utc).isoformat(),
+    }
+    return {"ok": True}
+
+
+@app.get("/permission-requests")
+async def get_permission_requests():
+    """UI polls this to show pending (undecided) approval requests."""
+    _evict_expired_permissions()
+    pending = [
+        {"id": pid, **entry}
+        for pid, entry in _pending_permissions.items()
+        if pid not in _permission_decisions
+    ]
+    return pending
+
+
+@app.post("/permission-decision/{request_id}")
+async def post_permission_decision(request_id: str, body: PermissionDecisionBody):
+    """UI posts approve/deny decision for a pending request."""
+    if request_id not in _pending_permissions and request_id not in _permission_decisions:
+        raise HTTPException(status_code=404, detail="Permission request not found or already expired")
+    _permission_decisions[request_id] = body.approved
+    _pending_permissions.pop(request_id, None)
+    return {"ok": True}
+
+
+@app.get("/permission-decision/{request_id}")
+async def get_permission_decision(request_id: str):
+    """Hook script polls this to get the decision for its request."""
+    from fastapi.responses import JSONResponse
+    _evict_expired_permissions()
+    if request_id in _permission_decisions:
+        return JSONResponse(
+            status_code=200,
+            content={"decided": True, "approved": _permission_decisions[request_id]},
+        )
+    if request_id in _pending_permissions:
+        return JSONResponse(status_code=202, content={"decided": False})
+    # Unknown: expired or never existed — treat as denied so hook times out safely
+    return JSONResponse(status_code=200, content={"decided": True, "approved": False})
 
 
 @app.get("/vault/sessions")
@@ -934,7 +1219,7 @@ async def vault_sessions(worker: str = "", token: str = ""):
     if not _check_token(token):
         from fastapi.responses import Response
         return Response(status_code=403)
-    sessions_dir = VAULT_ROOT / "AI-Systems" / "Claude-Logs" / "Sessions"
+    sessions_dir = VAULT_ROOT / _NOTES_PATH
     if not sessions_dir.exists():
         return []
     results = []
@@ -1219,7 +1504,7 @@ async def session_notes(session: str, token: str = ""):
     if not _check_token(token):
         from fastapi.responses import Response
         return Response(status_code=403)
-    obsidian = VAULT_ROOT / "AI-Systems" / "Claude-Logs" / "Sessions"
+    obsidian = VAULT_ROOT / _NOTES_PATH
     matches = []
     if obsidian.exists():
         for f in sorted(obsidian.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True):
@@ -1288,6 +1573,85 @@ async def get_domains(token: str = ""):
     config = load_config()
     return [k for k in config.get("workers", {}).keys() if not k.startswith("_")]
 
+
+@app.get("/skills")
+async def get_skills(token: str = ""):
+    """Scan ~/.claude/skills/**/*.md and return [{n, c}] for the dispatch panel."""
+    skills_root = Path.home() / ".claude" / "skills"
+    if not skills_root.exists():
+        return []
+    result = []
+    seen = set()
+    for path in sorted(skills_root.rglob("*.md")):
+        if path.name == "INDEX.md":
+            continue
+        rel = path.relative_to(skills_root)
+        parts = rel.parts
+        if path.name == "SKILL.md":
+            name = parts[0] if len(parts) >= 2 else path.stem
+            cat  = parts[1] if len(parts) >= 3 else "plugin"
+        else:
+            name = path.stem
+            cat  = parts[0] if len(parts) >= 2 else "general"
+        if name not in seen:
+            seen.add(name)
+            result.append({"n": name, "c": cat})
+    return result
+
+
+@app.get("/timeline")
+async def get_timeline(token: str = "", limit: int = 50, session: str = ""):
+    """Return recent dispatch/complete/blocked events across all workers (or one session)."""
+    from lib.timeline import timeline_read
+    if session:
+        return timeline_read(session, limit=limit)
+    return timeline_recent(limit=limit)
+
+
+@app.get("/costs")
+async def get_costs(token: str = "", days: int = 7):
+    """Return per-domain task count and avg duration for the last N days."""
+    return cost_summary(days=days)
+
+
+@app.get("/model-health")
+async def get_model_health(token: str = ""):
+    """Return model health state — failure counts and cooldown windows."""
+    from lib.model_health import _read_locked
+    return {"summary": _model_health_summary(), "state": _read_locked()}
+
+
+@app.get("/doctor")
+async def get_doctor(token: str = ""):
+    """Run all orchmux doctor checks and return structured JSON results."""
+    import subprocess
+    try:
+        r = subprocess.run(
+            ["python3", str(ROOT / "doctor.py")],
+            capture_output=True, text=True, timeout=15
+        )
+        lines = (r.stdout or "").splitlines()
+        checks = {}
+        for line in lines:
+            line = line.strip()
+            if not line or line.startswith("orchmux") or line.startswith("STATUS"):
+                continue
+            if line.startswith("["):
+                end = line.find("]")
+                if end > 0:
+                    label = line[1:end].strip()
+                    rest = line[end+1:].strip()
+                    checks[label] = {"pass": rest.startswith("PASS"), "detail": rest}
+        # Server is trivially up — we're answering this request from inside it
+        checks["server"] = {"pass": True, "detail": "PASS responding (in-process)"}
+        all_pass = all(c["pass"] for c in checks.values())
+        fail_count = sum(1 for c in checks.values() if not c["pass"])
+        summary_line = "STATUS: all checks passed" if all_pass else f"STATUS: {fail_count} issue(s) found"
+        return {"ok": all_pass, "summary": summary_line, "checks": checks}
+    except Exception as e:
+        return {"ok": False, "summary": f"doctor failed: {e}", "checks": {}}
+
+
 @app.get("/task/{task_id}")
 async def get_task(task_id: str, token: str = ""):
     entry = task_registry.get(task_id)
@@ -1348,7 +1712,12 @@ _AUTH_PANE_SIGNS = ("OAuth error", "Invalid code", "Paste code here",
 _NOISE_PANE = ("bypass permissions", "shift+tab", "⏵⏵", "Claude Code",
                "Sonnet", "Opus", "Welcome to", "Syntax theme",
                "ctrl+t to disable", "? for shortcuts", "╌",
-               "tmux focus", "focus-events", "3rd-party platform")
+               "tmux focus", "focus-events", "3rd-party platform",
+               # Codex noise
+               "OpenAI Codex", ">_ OpenAI", "model to change", "/model to change",
+               "Tip:", "Use /fast", "Use /skills", "/skills to list",
+               # Kimi noise
+               "Kimi CLI", ">_ Kimi")
 
 
 @app.get("/worker-details")
@@ -1361,6 +1730,7 @@ async def worker_details(token: str = ""):
     for domain, cfg in config.get("workers", {}).items():
         if domain.startswith("_"):
             continue
+        model = cfg.get("model", "claude")
         for session in cfg.get("sessions", []):
             # Auth status from pane
             pane_r = tmux(["capture-pane", "-t", session, "-p", "-S", "-10"])
@@ -1372,9 +1742,9 @@ async def worker_details(token: str = ""):
             else:
                 real = [l for l in pane.splitlines()
                         if l.strip() and not any(n in l for n in _NOISE_PANE)
-                        and not all(c in "─━═ " for c in l.strip())]
+                        and not all(c in "─━═╌│╭╮╰╯ " for c in l.strip())]
                 last = real[-1].strip() if real else ""
-                auth = "ok" if last.startswith("❯") else "loading"
+                auth = "ok" if _is_idle_for_model(last, model, pane) else "loading"
 
             # Last task from queue file
             qf = QUEUE_DIR / f"{session}.yaml"
@@ -1397,7 +1767,6 @@ async def worker_details(token: str = ""):
                 "last_task_status": last_task_status,
                 "last_task_time": last_task_time,
                 "domain": domain,
-                "handles": cfg.get("handles", []),
             }
     # Merge in display names / roles / slack_target from meta
     meta = _load_worker_meta()
@@ -1465,17 +1834,11 @@ async def slack_send(req: Request, token: str = ""):
 async def dashboard(token: str = "", ui: str = ""):
     if not _check_token(token):
         return HTMLResponse(content="<h2>403 Forbidden</h2><p>Add ?token=YOUR_TOKEN to the URL.</p>", status_code=403)
-    # Default to clean UI; pass ?ui=legacy for the old built-in dashboard
-    if ui != "legacy":
+    if ui == "clean":
         html_path = _CLEAN_DIR / "orchmux-clean.html"
         if html_path.exists():
-            return HTMLResponse(content=_inject_vault_config(html_path.read_text()))
+            return HTMLResponse(content=html_path.read_text())
     return HTMLResponse(content=_build_dashboard(token))
-
-
-def _inject_vault_config(html: str) -> str:
-    snippet = f'<script>window.__ORCHMUX_VAULT_NAME__={json.dumps(VAULT_NAME)};</script>'
-    return html.replace("</head>", f"{snippet}</head>", 1)
 
 
 @app.get("/dashboard/clean")
@@ -1485,7 +1848,7 @@ async def clean_dashboard(token: str = ""):
     html_path = _CLEAN_DIR / "orchmux-clean.html"
     if not html_path.exists():
         raise HTTPException(404, "Clean UI not found — run the integration step first")
-    return HTMLResponse(content=_inject_vault_config(html_path.read_text()))
+    return HTMLResponse(content=html_path.read_text())
 
 
 def _build_dashboard(token: str = "") -> str:  # noqa: E501
@@ -1497,6 +1860,7 @@ def _build_dashboard(token: str = "") -> str:  # noqa: E501
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>orchmux</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%231a1a1a'/><text x='16' y='22' text-anchor='middle' font-size='18' font-family='monospace' fill='%2300ff88'>⬡</text></svg>">
 <style>
 *{{box-sizing:border-box;margin:0;padding:0}}
 body{{background:#f5f5f5;color:#1a1a1a;font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',sans-serif;font-size:13px;padding:12px;line-height:1.5}}
@@ -1873,7 +2237,15 @@ function mdParse(raw){{
         <div style="flex:0 0 auto">
           <div style="font-size:9px;color:#666;margin-bottom:4px;text-transform:uppercase;letter-spacing:.06em">Domain override</div>
           <select id="dm-domain" style="background:#2a2a2a;border:1px solid #3a3a3a;border-radius:6px;color:#888;padding:7px 10px;font-size:12px;font-family:inherit;outline:none">
-            <option value="engineering" selected>engineering</option>
+            <option value="cx">cx</option>
+            <option value="research" selected>research</option>
+            <option value="finance">finance</option>
+            <option value="amazon">amazon</option>
+            <option value="firmware">firmware</option>
+            <option value="data">data</option>
+            <option value="pr_review">pr_review</option>
+            <option value="wacli">wacli</option>
+            <option value="legal">legal</option>
           </select>
         </div>
       </div>
@@ -1905,7 +2277,7 @@ function mdParse(raw){{
       </div>
       <div>
         <div style="font-size:10px;color:#888;margin-bottom:6px;text-transform:uppercase;letter-spacing:.05em">Role / How to use <span style="color:#555;text-transform:none;font-size:10px">(supervisor context)</span></div>
-        <textarea id="meta-role" placeholder="e.g. Handles engineering tasks and PR reviews. Prefers step-by-step tasks." style="width:100%;background:#2a2a2a;border:1px solid #444;border-radius:6px;color:#ddd;padding:10px;font-size:12px;font-family:inherit;outline:none;resize:none;line-height:1.6;box-sizing:border-box;min-height:100px"></textarea>
+        <textarea id="meta-role" placeholder="e.g. Handles CX bot bugs and PR reviews. Prefers step-by-step tasks. Always run /cx-monitor first." style="width:100%;background:#2a2a2a;border:1px solid #444;border-radius:6px;color:#ddd;padding:10px;font-size:12px;font-family:inherit;outline:none;resize:none;line-height:1.6;box-sizing:border-box;min-height:100px"></textarea>
       </div>
       <button onclick="saveMeta()" style="background:#1a73e8;border:none;color:#fff;border-radius:8px;padding:11px;font-size:13px;font-family:inherit;font-weight:600;cursor:pointer">Save</button>
       <div id="meta-msg" style="font-size:11px;color:#aaa;text-align:center;min-height:16px"></div>
@@ -1942,7 +2314,12 @@ function mdParse(raw){{
       <div style="flex:0 0 120px">
         <div style="font-size:10px;color:#aaa;margin-bottom:4px">DOMAIN</div>
         <select id="d-domain" style="width:100%;background:#fff;border:1px solid #e0e0e0;border-radius:6px;color:#333;padding:5px 8px;font-size:12px;font-family:inherit;outline:none">
-          <option value="engineering">engineering</option>
+          <option value="cx">cx</option>
+          <option value="research">research</option>
+          <option value="data">data</option>
+          <option value="pr_review">pr_review</option>
+          <option value="wacli">wacli</option>
+          <option value="legal">legal</option>
         </select>
       </div>
       <div style="flex:1;min-width:240px;position:relative">
@@ -2038,7 +2415,7 @@ function mdParse(raw){{
           <div style="font-size:10px;color:#888;line-height:1.5">Creates a new tmux session, starts the model CLI inside it, and registers it as a worker.</div>
           <div>
             <div style="font-size:10px;color:#aaa;margin-bottom:4px">SESSION NAME</div>
-            <input id="sp-name" placeholder="e.g. eng-worker-3" style="width:100%;box-sizing:border-box;background:#fff;border:1px solid #e0e0e0;border-radius:6px;color:#333;padding:6px 10px;font-size:12px;font-family:inherit;outline:none">
+            <input id="sp-name" placeholder="e.g. cx-bot-fix-6" style="width:100%;box-sizing:border-box;background:#fff;border:1px solid #e0e0e0;border-radius:6px;color:#333;padding:6px 10px;font-size:12px;font-family:inherit;outline:none">
           </div>
           <div>
             <div style="font-size:10px;color:#aaa;margin-bottom:4px">DOMAIN</div>
@@ -2140,6 +2517,12 @@ function pulseClass(s){{
 
 // ── skill autocomplete ────────────────────────────────────────────────────
 const SKILLS=[
+  // CX Bot
+  {{n:'cx-bot-fix',c:'cx'}},{{n:'cx-stats',c:'cx'}},{{n:'cx-monitor',c:'cx'}},
+  {{n:'cx-latency',c:'cx'}},{{n:'cx-opus',c:'cx'}},{{n:'cx-live-funnel',c:'cx'}},
+  {{n:'cx-bedrock-cost',c:'cx'}},{{n:'cx-post-release-check',c:'cx'}},
+  {{n:'cx-regression-validation',c:'cx'}},{{n:'cx-pr-triage',c:'cx'}},
+  {{n:'cx-fw-callout',c:'cx'}},{{n:'cx-deploy-telemetry',c:'cx'}},
   // Deploy & Git
   {{n:'deploy',c:'deploy'}},{{n:'deploy-broadcast',c:'deploy'}},
   {{n:'hotfix-cycle',c:'deploy'}},{{n:'git-workflow',c:'code'}},
@@ -2147,17 +2530,22 @@ const SKILLS=[
   {{n:'fastapi-patterns',c:'code'}},{{n:'react-patterns',c:'code'}},
   {{n:'postgresql',c:'code'}},{{n:'pgvector',c:'code'}},{{n:'code-audit',c:'code'}},
   // Data
-  {{n:'metabase',c:'data'}},{{n:'snowflake',c:'data'}},{{n:'data-audit',c:'data'}},
-  {{n:'revenue-report',c:'data'}},{{n:'analytics',c:'data'}},
-  // Ops
-  {{n:'error-digest',c:'ops'}},{{n:'triage',c:'ops'}},
+  {{n:'metabase',c:'data'}},{{n:'snowflake',c:'data'}},{{n:'ivds',c:'data'}},
+  {{n:'financial-extract',c:'data'}},{{n:'uh-data',c:'data'}},
+  // Ops & Research
+  {{n:'amazon-marketplace',c:'amazon'}},{{n:'amazon-ops',c:'amazon'}},
+  {{n:'amazon-pulse',c:'amazon'}},{{n:'amazon-audit',c:'amazon'}},
+  {{n:'ios-handoff',c:'ios'}},{{n:'error-digest',c:'ops'}},
+  {{n:'slack-thread-triage',c:'ops'}},{{n:'notion-action-extractor',c:'ops'}},
+  {{n:'patent-brief',c:'legal'}},{{n:'firmware-audit',c:'firmware'}},
   // Docs & Content
   {{n:'google-workspace',c:'docs'}},{{n:'google-docs-formatting',c:'docs'}},
-  {{n:'pptx-design',c:'docs'}},
+  {{n:'pptx-design',c:'docs'}},{{n:'refresh-replacement-gsheet',c:'docs'}},
   // Workflow commands
   {{n:'standup',c:'cmd'}},{{n:'triage',c:'cmd'}},{{n:'weekly',c:'cmd'}},
   {{n:'architect',c:'cmd'}},{{n:'debug',c:'cmd'}},{{n:'brainstorm',c:'cmd'}},
   {{n:'payments',c:'cmd'}},{{n:'inventory',c:'cmd'}},{{n:'pr-review-fix',c:'cmd'}},
+  {{n:'cx-autopilot',c:'cmd'}},{{n:'wave-run',c:'cmd'}},
 ];
 
 let _skillIdx=-1;
@@ -2923,27 +3311,17 @@ async function saveMeta(){{
     msg.style.color='#e57373'; msg.textContent='⚠️ Network error';
   }}
 }}
-let _DKW={{}};
-let _DKW_DEFAULT='';
-async function _loadDomainKeywords(){{
-  try{{
-    const wd=await fetch('/worker-details{qa}').then(r=>r.json());
-    const map={{}};
-    let first='';
-    for(const w of (wd||[])){{
-      if(!w.domain||w.domain.startsWith('_'))continue;
-      if(!first)first=w.domain;
-      if(w.handles&&w.handles.length)map[w.domain]=w.handles;
-    }}
-    _DKW=map;
-    _DKW_DEFAULT=first;
-  }}catch(e){{}}
-}}
-_loadDomainKeywords();
+const _DKW={{
+  engineering:['bug fix','deploy','code review','pull request','pr review','diff','merge','api','backend','frontend','database','staging','hotfix','rollback'],
+  support:['support','ticket','customer','issue','help desk','escalation','complaint','refund','billing'],
+  data:['data','analytics','pipeline','report','metrics','dashboard','query','anomaly','data audit'],
+  notifications:['notify','alert','broadcast','scheduled report','send message','ping team'],
+  research:['research','search for','find out','look up','investigate','analyze','summarize','compare'],
+}};
 function _detectDomain(txt){{
-  const ml=txt.toLowerCase();let best='',bv=0;
+  const ml=txt.toLowerCase();let best='research',bv=0;
   for(const [d,kws] of Object.entries(_DKW)){{const sc=kws.filter(k=>ml.includes(k)).length;if(sc>bv){{bv=sc;best=d;}}}}
-  return best||_DKW_DEFAULT;
+  return bv>0?best:'research';
 }}
 function dmTaskInput(val){{
   const domain=_detectDomain(val);
@@ -3808,10 +4186,16 @@ async def _watchdog_tick():
                 continue
             # Only recover if worker is at idle prompt (task text never executed)
             pane = tmux(["capture-pane", "-t", session, "-p", "-S", "-5"]).stdout
-            at_prompt = any(
-                l.strip().startswith("❯") and not l.strip("❯ ")
-                for l in pane.splitlines() if l.strip()
-            )
+            model = _session_model(session)
+            lines = [l.strip() for l in pane.splitlines() if l.strip()]
+            if model in ("codex", "kimi"):
+                # codex/kimi use › prompt; also check status bar (gpt-5/kimi suffix)
+                at_prompt = any(
+                    l.startswith("›") and not any(m in l for m in _BUSY_MARKERS)
+                    for l in lines
+                ) or any(s in pane for s in _CODEX_IDLE_SIGNS + _KIMI_IDLE_SIGNS)
+            else:
+                at_prompt = any(l.startswith("❯") and not l.strip("❯ ") for l in lines)
             if not at_prompt:
                 continue
             dispatched_at = task.get("dispatched_at", "")

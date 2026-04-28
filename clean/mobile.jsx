@@ -167,11 +167,14 @@ function CleanMobileSplit() {
 }
 
 function MobileDispatch({workers}) {
+  const liveSkills = useSkills();
   const [taskText, setTaskText] = React.useState('');
   const [dispDomain, setDispDomain] = React.useState('');
   const [dispSending, setDispSending] = React.useState(false);
   const [dispMsg, setDispMsg] = React.useState('');
   const [open, setOpen] = React.useState(false);
+  const [history, setHistory] = React.useState([]);
+  const [histOpen, setHistOpen] = React.useState(false);
 
   const _DKW2 = {
     cx:['cx','zendesk','ticket','support','customer'],
@@ -230,9 +233,29 @@ function MobileDispatch({workers}) {
   return (
     <div style={{padding:'14px 16px',borderTop:'1px solid #f0e8d0',background:'rgba(255,248,220,0.9)',flexShrink:0}}>
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
-        <div style={{fontSize:14,fontWeight:600,color:'#2a251f'}}>New task</div>
-        <div onClick={()=>setOpen(false)} style={{fontSize:12,color:'#a59985',cursor:'pointer'}}>✕</div>
+        <div style={{display:'flex',alignItems:'center',gap:8}}>
+          <div style={{fontSize:14,fontWeight:600,color:'#2a251f'}}>New task</div>
+          <button onClick={async()=>{const next=!histOpen;setHistOpen(next);if(next&&!history.length){const h=await _get('/dispatch-history'+_TQ);if(h&&Array.isArray(h))setHistory(h);}}}
+            style={{background:'none',border:'1px solid #ead9a3',borderRadius:4,color:'#b08a2a',fontSize:10.5,cursor:'pointer',padding:'1px 7px',fontFamily:'inherit'}}>
+            ↑ History
+          </button>
+        </div>
+        <div onClick={()=>{setOpen(false);setHistOpen(false);}} style={{fontSize:12,color:'#a59985',cursor:'pointer'}}>✕</div>
       </div>
+      {histOpen && (
+        <div style={{marginBottom:8,border:'1px solid #ead9a3',borderRadius:6,overflow:'auto',maxHeight:140,background:'#fff'}}>
+          {history.length===0
+            ? <div style={{padding:'8px 12px',fontSize:11,color:'#a59985'}}>No history yet</div>
+            : history.map((h,i)=>(
+              <div key={i} onClick={()=>{setTaskText(h.task);if(h.domain)setDispDomain(h.domain);setHistOpen(false);}}
+                style={{padding:'6px 10px',cursor:'pointer',borderBottom:i<history.length-1?'1px solid #f5f0e8':'none',fontSize:11.5}}>
+                <div style={{color:'#2a251f',overflow:'hidden',whiteSpace:'nowrap',textOverflow:'ellipsis'}}>{h.task.substring(0,80)}{h.task.length>80?'…':''}</div>
+                <div style={{fontSize:10,color:'#a59985',marginTop:1}}>{h.domain} · {h.at}</div>
+              </div>
+            ))
+          }
+        </div>
+      )}
       <textarea
         autoFocus
         placeholder="Describe the task. Type / for skills."
@@ -247,7 +270,7 @@ function MobileDispatch({workers}) {
         <div style={{fontSize:11,color:dispMsg.startsWith('✓')?'#2e7d32':'#b85c00',marginTop:5}}>{dispMsg}</div>
       )}
       <div style={{display:'flex',gap:5,marginTop:8,flexWrap:'wrap'}}>
-        {LIVE_SKILLS.slice(0,4).map(s=>(
+        {liveSkills.slice(0,4).map(s=>(
           <span key={s.n} onClick={()=>setTaskText('/'+s.n+' ')} style={{fontSize:10.5,padding:'3px 8px',borderRadius:4,background:'#fff',color:'#b08a2a',border:'1px solid #ead9a3',fontFamily:'"SF Mono",monospace',cursor:'pointer'}}>/{s.n}</span>
         ))}
       </div>
@@ -278,7 +301,7 @@ function MobileVaultBrowser() {
   React.useEffect(() => { loadDir(''); }, []);
   React.useEffect(() => { renderParsedHtml(fileRef.current, fileHtml); }, [fileHtml]);
 
-  const VAULT_NAME = window.__ORCHMUX_VAULT_NAME__ || 'vault';
+  const VAULT_NAME = 'obsidian-vault';
   const crumbs = path ? path.split('/').filter(Boolean) : [];
 
   return (

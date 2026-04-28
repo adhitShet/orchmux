@@ -15,11 +15,16 @@ import os
 import re
 import ssl
 import subprocess
+import sys
 import time
 import urllib.request
 import urllib.error
 from datetime import datetime
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
+from lib.timeline import timeline_write
+from lib.model_health import record_failure, record_success, is_healthy, health_summary
 
 # Allow self-signed certs for local HTTPS connections to orchmux server
 _SSL_CTX = ssl.create_default_context()
@@ -36,23 +41,24 @@ POLL_SEC  = 5
 TIMEOUT_SEC = 30 * 60  # 30 minutes
 
 def _server_url() -> str:
-    """Resolve server URL — uses https if cert exists, tries Tailscale IP first."""
+    """Resolve server URL — uses https if cert/key exist, otherwise http."""
     from pathlib import Path as _Path
     cert = _Path(__file__).parent / "server" / "cert.pem"
     scheme = "https" if cert.exists() else "http"
-    bind = os.environ.get("ORCHMUX_BIND_HOST", "")
-    if bind:
-        return f"{scheme}://{bind}:9889"
-    r = subprocess.run(
-        ["ip", "addr", "show", "tailscale0"],
-        capture_output=True, text=True)
-    import re as _re
-    m = _re.search(r"inet (\d+\.\d+\.\d+\.\d+)/", r.stdout)
-    if m:
-        return f"{scheme}://{m.group(1)}:9889"
-    return f"{scheme}://127.0.0.1:9889"
+    host = os.environ.get("ORCHMUX_BIND_HOST", "127.0.0.1")
+    return f"{scheme}://{host}:9889"
 
-SERVER = _server_url()
+_server_url_cache: str | None = None
+
+
+def get_server_url() -> str:
+    """Return the server URL, retrying Tailscale resolution on each call until a
+    non-localhost address is found.  Once a Tailscale IP is cached it is reused."""
+    global _server_url_cache
+    if _server_url_cache and "127.0.0.1" not in _server_url_cache:
+        return _server_url_cache
+    _server_url_cache = _server_url()
+    return _server_url_cache
 
 # Track what we've already seen per session to avoid re-processing
 _last_seen: dict[str, str] = {}
@@ -67,14 +73,19 @@ _UI_NOISE    = ("bypass permissions", "shift+tab", "? for shortcuts",
                 "Syntax theme", "ctrl+t to disable", "╌",
                 "tmux focus", "focus-events", "3rd-party platform",
                 "new task? /clear", "ctrl+t to hide tasks", "ctrl+t to show tasks",
-                "⏵⏵", "accept edits on", "esc to interrupt", "to save", "tokens")
+                "⏵⏵", "accept edits on", "esc to interrupt", "to save", "tokens",
+                # Codex UI noise
+                "OpenAI Codex", ">_ OpenAI", "/model to change", "model to change",
+                "Tip:", "Use /fast", "Use /skills", "/skills to list",
+                # Kimi UI noise
+                "Kimi CLI", ">_ Kimi")
 
 def _is_ui_noise(line: str) -> bool:
     s = line.strip()
     if any(n in line for n in _UI_NOISE):
         return True
-    # Claude Code separator lines (all ─ or ━ chars)
-    if s and all(c in "─━═─ " for c in s):
+    # Separator / box-drawing lines (Claude Code ─━═ and Codex ╭╮╰╯│)
+    if s and all(c in "─━═╌│╭╮╰╯ " for c in s):
         return True
     return False
 # Patterns that mean the session needs human intervention
@@ -115,11 +126,16 @@ def pane_state(pane: str) -> str:
         if sign.lower() in pane.lower():
             return "blocked"
 
-    # Idle prompt check FIRST — ❯ at the end of real content means Claude is
-    # waiting for input, regardless of "esc to interrupt" in the status bar
-    # (Claude Code always shows that bar even when idle at the ❯ prompt)
-    if last.startswith("❯") and not last.strip("❯ "):
-        content = [l for l in real if not l.strip().startswith("❯")]
+    # Idle prompt check — model-specific idle signals
+    # Claude Code: ❯ prompt
+    # Codex: › input prefix OR "gpt-X · ~/path" status bar (last non-noise line)
+    # Kimi: › input prefix
+    _claude_idle = last.startswith("❯") and not last.strip("❯ ")
+    _codex_idle  = (last.startswith("›") or
+                    any(s in last for s in ("gpt-5", "gpt-4", "gpt-3")))
+    _kimi_idle   = last.startswith("›") and "kimi" in pane.lower()
+    if _claude_idle or _codex_idle or _kimi_idle:
+        content = [l for l in real if not l.strip().startswith(("❯", "›"))]
         last_content_lines = content[-3:] if content else []
         if any("?" in l for l in last_content_lines):
             return "waiting"
@@ -142,9 +158,12 @@ def all_worker_sessions() -> list[str]:
     try:
         with open(ORCHMUX / "workers.yaml") as f:
             data = yaml.safe_load(f)
+        protected = set(data.get("_protected", {}).keys())
         sessions = []
         for cfg in data.get("workers", {}).values():
-            sessions.extend(cfg.get("sessions", []))
+            for s in cfg.get("sessions", []):
+                if s not in protected:
+                    sessions.append(s)
         return sessions
     except Exception:
         return []
@@ -159,7 +178,7 @@ def log(msg: str):
 def orchmux_post(path: str, body: dict) -> dict:
     payload = json.dumps(body).encode()
     req = urllib.request.Request(
-        f"{SERVER}{path}", data=payload,
+        f"{get_server_url()}{path}", data=payload,
         headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=5, context=_SSL_CTX) as r:
@@ -323,11 +342,25 @@ def process_task(task: dict):
 _alerted_blocked: set[str] = set()  # sessions we already notified as blocked
 _auth_stuck_count: dict[str, int] = {}  # how many polls a session has been auth-stuck
 _startup_polls: dict[str, int] = {}    # polls spent at startup screen — nudge after 3
+_approval_sent: set[str] = set()       # sessions we already auto-approved this cycle
+
 _AUTH_SIGNS = ("OAuth error", "Invalid code", "Paste code here",
                "Browser didn't open", "Press Enter to retry",
                "API Error: 401", "authentication_error", "Invalid authentication",
                "Please run /login", "Invalid API key", "expired")
 _STARTUP_SIGNS = ("Syntax theme", "╌╌╌╌", "ctrl+t to disable")
+
+
+def _model_for_session(session: str) -> str:
+    try:
+        with open(ORCHMUX / "workers.yaml") as f:
+            data = yaml.safe_load(f)
+        for domain, cfg in data.get("workers", {}).items():
+            if session in cfg.get("sessions", []):
+                return cfg.get("model", "claude")
+    except Exception:
+        pass
+    return "claude"
 
 
 def _domain_for_session(session: str) -> str:
@@ -382,18 +415,29 @@ def _graceful_exit(session: str, timeout: float = 6.0):
 
 
 def _relaunch_worker(session: str):
-    """Gracefully exit Claude, save session ID, then resume it on restart."""
+    """Gracefully exit worker, save session ID if applicable, then resume."""
     domain = _domain_for_session(session)
+    model  = _model_for_session(session)
     work_dir = ORCHMUX / "worker-workdirs" / session
     work_dir.mkdir(parents=True, exist_ok=True)
 
+    if model == "codex":
+        _relaunch_codex(session, domain, work_dir)
+    else:
+        _relaunch_claude(session, domain, work_dir)
+
+    _auth_stuck_count.pop(session, None)
+    _alerted_blocked.discard(session)
+    timeline_write(session, "relaunched", domain=domain, model=model)
+
+
+def _relaunch_claude(session: str, domain: str, work_dir):
     # Save current session ID BEFORE doing anything destructive
     current_id = _get_latest_session_id(session)
     if current_id:
         _save_session_id(session, current_id)
         log(f"[heal] saved session ID for {session}: {current_id}")
 
-    # Try graceful exit first so Claude can finalise its state
     if session_exists(session):
         _graceful_exit(session)
 
@@ -423,8 +467,30 @@ def _relaunch_worker(session: str):
 
     subprocess.run(["tmux", "send-keys", "-t", session, cmd, "Enter"],
                    capture_output=True)
-    _auth_stuck_count.pop(session, None)
-    _alerted_blocked.discard(session)
+
+
+def _relaunch_codex(session: str, domain: str, work_dir):
+    # Gracefully exit: Codex responds to q or Ctrl-C at its prompt
+    if session_exists(session):
+        subprocess.run(["tmux", "send-keys", "-t", session, "q", "Enter"],
+                       capture_output=True)
+        time.sleep(1.5)
+
+    subprocess.run(["tmux", "kill-session", "-t", session], capture_output=True)
+    time.sleep(0.5)
+    subprocess.run([
+        "tmux", "new-session", "-d", "-s", session, "-c", str(work_dir),
+        "-e", f"ORCHMUX_SESSION={session}",
+        "-e", f"ORCHMUX_WORKER_ID={session}",
+        "-e", f"ORCHMUX_DOMAIN={domain}",
+        "-e", f"ORCHMUX_QUEUE={QUEUE_DIR}/{session}.yaml",
+        "-e", f"ORCHMUX_RESULTS={ORCHMUX}/results/{session}.yaml",
+    ], capture_output=True)
+
+    # resume --last picks up the most recent Codex session
+    subprocess.run(["tmux", "send-keys", "-t", session, "codex resume --last", "Enter"],
+                   capture_output=True)
+    log(f"[heal] codex resume --last for {session}")
 
 
 def _notify_supervisor_direct(session: str, event: str, detail: str):
@@ -449,12 +515,34 @@ def sync_worker_status():
         if not pane.strip():
             continue
 
+        # Auto-nudge: Codex "Conversation interrupted" recovery menu → send Enter to continue
+        _CODEX_INTERRUPT = ("tell Codex what to do differently",
+                            "Conversation interrupted",
+                            "Hit /feedback to report")
+        if _model_for_session(session) == "codex" and any(s in pane for s in _CODEX_INTERRUPT):
+            subprocess.run(["tmux", "send-keys", "-t", session, "", "Enter"],
+                           capture_output=True)
+            _auth_stuck_count.pop(session, None)
+            continue
+
         # Auto-heal: auth stuck (OAuth loop)
-        if any(sign in pane for sign in _AUTH_SIGNS):
+        # Skip if the "Please run /login" comes from a hookify plugin error — not real auth
+        # Skip if Codex is showing its interrupted/recovery UI
+        _PLUGIN_NOISE = ("Plugin directory does not exist", "hookify", "Failed to run: Plugin")
+        _auth_hit = any(sign in pane for sign in _AUTH_SIGNS)
+        _plugin_false_pos = _auth_hit and any(n in pane for n in _PLUGIN_NOISE)
+        _codex_false_pos = (
+            _auth_hit
+            and _model_for_session(session) == "codex"
+            and any(s in pane for s in _CODEX_INTERRUPT)
+        )
+        if _auth_hit and not _plugin_false_pos and not _codex_false_pos:
             count = _auth_stuck_count.get(session, 0) + 1
             _auth_stuck_count[session] = count
             if count >= 3:  # stuck for 3 polls (~15s) → relaunch
-                log(f"[heal] {session} auth-stuck for {count} polls — relaunching")
+                model = _model_for_session(session)
+                record_failure(model)
+                log(f"[heal] {session} auth-stuck for {count} polls — relaunching (model health: {health_summary()})")
                 orchmux_post("/notify", {
                     "message": f"🔄 [{session}] was auth-stuck — auto-relaunched",
                     "channels": ["telegram"]
@@ -462,6 +550,10 @@ def sync_worker_status():
                 _relaunch_worker(session)
             continue
         else:
+            model = _model_for_session(session)
+            record_success(model)
+            _auth_stuck_count.pop(session, None)
+        if _plugin_false_pos or _codex_false_pos:
             _auth_stuck_count.pop(session, None)
 
         # Auto-nudge: startup animation stuck (╌╌╌ / Syntax theme) → send Enter
@@ -590,7 +682,7 @@ _server_hung_count: int = 0
 def _server_is_responsive() -> bool:
     """Return True if the server responds to /health within 4s."""
     try:
-        req = urllib.request.Request(f"{SERVER}/health")
+        req = urllib.request.Request(f"{get_server_url()}/health")
         with urllib.request.urlopen(req, timeout=4, context=_SSL_CTX) as r:
             return r.status == 200
     except Exception:
@@ -626,12 +718,7 @@ def sync_infra_health():
                 k, _, v = line.partition("=")
                 env_extra[k.strip()] = v.strip()
 
-    bind = subprocess.run(
-        ["ip", "addr", "show", "tailscale0"],
-        capture_output=True, text=True)
-    import re as _re
-    m = _re.search(r"inet (\d+\.\d+\.\d+\.\d+)/", bind.stdout)
-    bind_host = m.group(1) if m else "127.0.0.1"
+    bind_host = os.environ.get("ORCHMUX_BIND_HOST", "127.0.0.1")
 
     for name, cfg in _INFRA_SESSIONS.items():
         if session_exists(name):

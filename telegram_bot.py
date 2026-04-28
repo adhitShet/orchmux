@@ -52,12 +52,8 @@ def _server_url() -> str:
     from pathlib import Path as _Path
     cert = _Path(__file__).parent / "server" / "cert.pem"
     scheme = "https" if cert.exists() else "http"
-    bind = os.environ.get("ORCHMUX_BIND_HOST", "")
-    if bind:
-        return f"{scheme}://{bind}:9889"
-    r = subprocess.run(["ip", "addr", "show", "tailscale0"], capture_output=True, text=True)
-    m = re.search(r"inet (\d+\.\d+\.\d+\.\d+)/", r.stdout)
-    return f"{scheme}://{m.group(1)}:9889" if m else f"{scheme}://127.0.0.1:9889"
+    host = os.environ.get("ORCHMUX_BIND_HOST", "127.0.0.1")
+    return f"{scheme}://{host}:9889"
 
 SERVER = _server_url()
 
@@ -109,6 +105,13 @@ def send(text: str, chat_id: str = CHAT_ID, parse_mode: str = "HTML"):
     # Telegram HTML: only <b> <i> <code> <pre> <a> allowed
     return tg_post("sendMessage", chat_id=chat_id, text=text,
                    parse_mode=parse_mode, disable_web_page_preview=True)
+
+def typing(chat_id: str = CHAT_ID):
+    tg_post("sendChatAction", chat_id=chat_id, action="typing")
+
+def react(chat_id: str, msg_id: int, emoji: str = "👀"):
+    tg_post("setMessageReaction", chat_id=chat_id, message_id=msg_id,
+            reaction=json.dumps([{"type": "emoji", "emoji": emoji}]))
 
 
 # ── orchmux API helpers ───────────────────────────────────────────────────────
@@ -282,8 +285,17 @@ HELP = """\
 def handle(msg: dict):
     text    = msg.get("text", "").strip()
     chat_id = str(msg.get("chat", {}).get("id", CHAT_ID))
+    msg_id  = msg.get("message_id")
     if not text:
         return
+    if ALLOWED_SENDERS and chat_id not in ALLOWED_SENDERS:
+        print(f"[orchmux-bot] ignored unauthorized sender {chat_id}")
+        return
+
+    # Acknowledge receipt immediately — 👀 = seen, typing = processing
+    if msg_id:
+        react(chat_id, msg_id, "👀")
+    typing(chat_id)
 
     # /w [domain]
     if re.match(r"^/w\b", text):
@@ -298,6 +310,7 @@ def handle(msg: dict):
         if len(parts) < 2:
             send("Usage: /p <session>", chat_id=chat_id)
             return
+        typing(chat_id)
         send(fmt_pane(parts[1].strip()), chat_id=chat_id)
         return
 
@@ -343,10 +356,11 @@ def handle(msg: dict):
         session = ""
         task    = rest
         if len(parts) == 2 and re.match(r"^[\w-]+-\d+$", parts[0]):
-            # looks like eng-worker-1, support-worker-2, etc.
+            # looks like cx-bot-fix-2, finance2, etc.
             session = parts[0]
             task    = parts[1]
         domain = match_domain(task)
+        typing(chat_id)
         send(do_dispatch(task, domain, session), chat_id=chat_id)
         return
 
@@ -367,20 +381,47 @@ def handle(msg: dict):
         return
 
     # Free text → auto-dispatch
+    typing(chat_id)
     domain = match_domain(text)
     send(do_dispatch(text, domain), chat_id=chat_id)
 
 
 # ── Poll loop ─────────────────────────────────────────────────────────────────
+ALLOWED_SENDERS = {CHAT_ID} if CHAT_ID else set()
+
+def _tailscale_ip() -> str:
+    try:
+        r = subprocess.run(["ip", "addr", "show", "tailscale0"], capture_output=True, text=True)
+        m = re.search(r"inet (\d+\.\d+\.\d+\.\d+)/", r.stdout)
+        return m.group(1) if m else "127.0.0.1"
+    except Exception:
+        return "127.0.0.1"
+
+APPROVER_URL = f"http://{_tailscale_ip()}:9876/telegram-callback"
+
+def forward_callback(update: dict):
+    """Forward callback_query updates to the telegram_approver."""
+    try:
+        payload = json.dumps(update).encode()
+        req = urllib.request.Request(APPROVER_URL, data=payload,
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            r.read()
+    except Exception as e:
+        print(f"[orchmux-bot] callback forward error: {e}")
+
+
 def main():
     print(f"[orchmux-bot] starting — server={SERVER}, chat={CHAT_ID}")
     offset = 0
     while True:
         try:
             resp = tg_get("getUpdates", offset=offset, timeout=30,
-                          allowed_updates="message")
+                          allowed_updates='["message","callback_query"]')
             for update in resp.get("result", []):
                 offset = update["update_id"] + 1
+                if update.get("callback_query"):
+                    forward_callback(update)
                 msg = update.get("message", {})
                 if msg:
                     handle(msg)

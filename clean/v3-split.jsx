@@ -58,30 +58,43 @@ function _detectDomain(text) {
 }
 
 // ── Dispatch panel (left bottom) ────────────────────────────────────────────
-// Group skills by category for the browser
-const SKILL_GROUPS = (() => {
-  const g = {};
-  for (const s of LIVE_SKILLS) { (g[s.c] = g[s.c]||[]).push(s); }
-  return g;
-})();
-
 function DispatchPanel({domains}) {
+  const liveSkills = useSkills();
+  const skillGroups = React.useMemo(() => {
+    const g = {};
+    for (const s of liveSkills) { (g[s.c] = g[s.c]||[]).push(s); }
+    return g;
+  }, [liveSkills]);
   const [open, setOpen]         = React.useState(false);
   const [taskText, setTaskText] = React.useState('');
   const [domain, setDomain]     = React.useState('');
   const [autoDom, setAutoDom]   = React.useState('');
   const [sending, setSending]   = React.useState(false);
   const [msg, setMsg]           = React.useState('');
+  const [histOpen, setHistOpen] = React.useState(false);
+  const [history, setHistory]   = React.useState([]);
   // slash autocomplete
-  const [slashQ, setSlashQ]     = React.useState('');   // query after /
+  const [slashQ, setSlashQ]     = React.useState(null);
   const [slashIdx, setSlashIdx] = React.useState(0);
   const taRef  = React.useRef(null);
   const msgRef = React.useRef('');
   msgRef.current = msg;
 
+  const loadHistory = async () => {
+    const h = await _get('/dispatch-history' + _TQ);
+    if (h && Array.isArray(h)) setHistory(h);
+  };
+
+  const pickHistory = (h) => {
+    setTaskText(h.task);
+    if (h.domain) setDomain(h.domain);
+    setHistOpen(false);
+    setTimeout(() => taRef.current && taRef.current.focus(), 50);
+  };
+
   // skills filtered by slash query
   const slashMatches = slashQ !== null
-    ? LIVE_SKILLS.filter(s => s.n.includes(slashQ) || s.c.includes(slashQ))
+    ? liveSkills.filter(s => s.n.includes(slashQ) || s.c.includes(slashQ))
     : [];
 
   const insertSkill = (name) => {
@@ -161,9 +174,35 @@ function DispatchPanel({domains}) {
     <div style={{borderTop:'2px solid #f0c75a',background:'#fffdf5',flexShrink:0,display:'flex',flexDirection:'column',maxHeight:'70%'}}>
       {/* header */}
       <div style={{padding:'12px 16px 0',display:'flex',justifyContent:'space-between',alignItems:'center',flexShrink:0}}>
-        <div style={{fontSize:13,fontWeight:700,color:'#2a251f'}}>New task</div>
-        <button onClick={()=>{setOpen(false);reset();}} style={{background:'none',border:'none',color:'#a59985',fontSize:14,cursor:'pointer',padding:'0 2px'}}>✕</button>
+        <div style={{display:'flex',alignItems:'center',gap:10}}>
+          <div style={{fontSize:13,fontWeight:700,color:'#2a251f'}}>New task</div>
+          <button onClick={async()=>{const next=!histOpen;setHistOpen(next);if(next&&!history.length)await loadHistory();}}
+            style={{background:'none',border:'none',color:'#b08a2a',fontSize:11,cursor:'pointer',padding:'1px 6px',borderRadius:4,border:'1px solid #f0e4b8',fontFamily:'inherit',background:histOpen?'#fff8e0':'transparent'}}>
+            ↑ History {history.length>0&&`(${history.length})`}
+          </button>
+        </div>
+        <button onClick={()=>{setOpen(false);reset();setHistOpen(false);}} style={{background:'none',border:'none',color:'#a59985',fontSize:14,cursor:'pointer',padding:'0 2px'}}>✕</button>
       </div>
+
+      {/* history dropdown */}
+      {histOpen && (
+        <div style={{overflow:'auto',maxHeight:180,borderBottom:'1px solid #f0e8d0',margin:'6px 16px 0',borderRadius:6,border:'1px solid #ead9a3',background:'#fff'}}>
+          {history.length===0
+            ? <div style={{padding:'10px 12px',fontSize:11,color:'#a59985'}}>No history yet</div>
+            : history.map((h,i)=>(
+              <div key={i} onClick={()=>pickHistory(h)}
+                style={{padding:'7px 12px',cursor:'pointer',borderBottom:i<history.length-1?'1px solid #f5f0e8':'none',fontSize:12}}>
+                <div style={{color:'#2a251f',overflow:'hidden',whiteSpace:'nowrap',textOverflow:'ellipsis',lineHeight:1.4}}>
+                  {h.task.substring(0,100)}{h.task.length>100?'…':''}
+                </div>
+                <div style={{fontSize:10,color:'#a59985',marginTop:2}}>
+                  {h.domain}{h.session&&h.session!=='queued'?' → '+h.session:''} · {h.at}
+                </div>
+              </div>
+            ))
+          }
+        </div>
+      )}
 
       {/* domain chips */}
       <div style={{padding:'8px 16px 0',display:'flex',gap:4,flexWrap:'wrap',flexShrink:0}}>
@@ -199,7 +238,7 @@ function DispatchPanel({domains}) {
 
       {/* skill browser — scrollable */}
       <div style={{overflow:'auto',padding:'8px 16px',flex:1}}>
-        {Object.entries(SKILL_GROUPS).map(([cat, skills])=>(
+        {Object.entries(skillGroups).map(([cat, skills])=>(
           <div key={cat} style={{marginBottom:8}}>
             <div style={{fontSize:9.5,color:'#c8b878',fontWeight:700,textTransform:'uppercase',letterSpacing:0.8,marginBottom:4}}>{cat}</div>
             <div style={{display:'flex',flexWrap:'wrap',gap:4}}>
@@ -275,11 +314,13 @@ function ResultsPanel() {
                 {r.success?'✓':'✗'}
               </span>
               <div style={{flex:1,minWidth:0}}>
-                <div style={{fontSize:13,color:'#2a251f',fontWeight:500,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{r.task||'(no task)'}</div>
-                <div style={{fontSize:11,color:'#a59985',marginTop:2,display:'flex',gap:8}}>
+                <div style={{fontSize:13,color:'#2a251f',fontWeight:500,lineHeight:1.45,
+                  ...(isExp ? {} : {overflow:'hidden',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical'})
+                }}>{r.task||'(no task)'}</div>
+                <div style={{fontSize:11,color:'#a59985',marginTop:3,display:'flex',gap:8,flexWrap:'wrap'}}>
                   <span>{r.session}</span>
                   {r.domain&&<><span>·</span><span>{r.domain}</span></>}
-                  {r.completed_at&&<><span>·</span><span>{r.completed_at.slice(11,16)}</span></>}
+                  {r.completed_at&&<><span>·</span><span>{r.completed_at.slice(11,16)} UTC</span></>}
                 </div>
               </div>
               <span style={{color:'#c8c0af',fontSize:11,flexShrink:0}}>{isExp?'▲':'▼'}</span>
@@ -586,7 +627,7 @@ function ManagePanel({workers, domains}) {
           <div style={{fontSize:11.5,color:'#8a8072',lineHeight:1.5}}>Create a new tmux session and register it as a worker.</div>
           <div>
             <div style={sLabel}>SESSION NAME</div>
-            <input value={spName} onChange={e=>setSpName(e.target.value)} placeholder="e.g. eng-worker-3" style={inputStyle}/>
+            <input value={spName} onChange={e=>setSpName(e.target.value)} placeholder="e.g. cx-bot-fix-6" style={inputStyle}/>
           </div>
           <div>
             <div style={sLabel}>DOMAIN</div>
@@ -721,7 +762,7 @@ function MetaModal({worker, onClose}) {
 }
 
 // ── Vault file card (WhatsApp-style inline preview) ─────────────────────────
-const VAULT_NAME    = window.__ORCHMUX_VAULT_NAME__ || 'vault';
+const VAULT_NAME    = 'obsidian-vault';
 // No external Obsidian editor — inline edit writes directly to vault, Obsidian Sync propagates
 
 function useVaultFile(vaultPath) {
@@ -834,10 +875,9 @@ function useVaultCards(rawText) {
   React.useEffect(() => {
     if (!rawText) { setCards([]); return; }
     const found = new Set();
-    const vaultPat = new RegExp('(?:~\\/)?(?:obsidian-vault|vault)\\/([^\\s\\)"\'`\\]]+\\.md)', 'g');
-    const pathHits = rawText.match(vaultPat) || [];
+    const pathHits = rawText.match(/(?:~\/)?obsidian-vault\/([^\s\)"'`\]]+\.md)/g) || [];
     pathHits.forEach(m => {
-      const p = m.replace(/^(?:~\/)?(?:obsidian-vault|vault)\//, '');
+      const p = m.replace(/^(?:~\/)?obsidian-vault\//, '');
       if (p) found.add(p);
     });
     const linkHits = rawText.match(/obsidian:\/\/open\?[^"'\s]*file=[^&"'\s]+/g) || [];
@@ -848,6 +888,105 @@ function useVaultCards(rawText) {
     setCards([...found]);
   }, [rawText]);
   return cards;
+}
+
+// ── Global orchmux todo list (left panel, above dispatch) ──────────────────
+// ── Shared todos state — one pool, instant cross-component sync ──────────────
+const _todoSubs = new Set();
+let _todoCache = null;
+
+function _notifyTodoSubs() {
+  _todoSubs.forEach(fn => fn());
+}
+
+function useTodos() {
+  const [items, setItems] = React.useState(_todoCache || []);
+  React.useEffect(() => {
+    let alive = true;
+    const load = () => _get('/todos' + _TQ).then(d => {
+      if (!alive || !d) return;
+      _todoCache = d;
+      setItems(d);
+    });
+    load();
+    _todoSubs.add(load);
+    const t = setInterval(load, 15000);
+    return () => { alive = false; _todoSubs.delete(load); clearInterval(t); };
+  }, []);
+  const persist = React.useCallback((next) => {
+    _todoCache = next;
+    setItems(next);
+    fetch('/todos' + _TQ, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(next)})
+      .then(() => _notifyTodoSubs());
+  }, []);
+  return [items, persist];
+}
+
+function OrchmuxNote() {
+  const [open, setOpen]   = React.useState(false);
+  const [items, persist]  = useTodos();
+  const [input, setInput] = React.useState('');
+  const inputRef = React.useRef(null);
+
+  const add = () => {
+    const t = input.trim();
+    if (!t) return;
+    persist([...(items||[]), {id: Date.now(), text: t, done: false}]);
+    setInput('');
+    setTimeout(() => inputRef.current?.focus(), 0);
+  };
+
+  const toggle = (id) => persist(items.map(it => it.id===id ? {...it, done:!it.done} : it));
+  const remove = (id) => persist(items.filter(it => it.id!==id));
+
+  const open_items = items.filter(i => !i.done);
+  const preview = open_items.length
+    ? `${open_items.length} open · ${open_items[0].text.slice(0,40)}${open_items[0].text.length>40?'…':''}`
+    : items.length ? 'all done ✓' : '';
+
+  return (
+    <div style={{borderTop:'1px solid #f0e8d0',flexShrink:0}}>
+      <div onClick={()=>{setOpen(o=>!o);setTimeout(()=>!open&&inputRef.current?.focus(),50);}}
+        style={{padding:'7px 14px',display:'flex',alignItems:'center',gap:8,cursor:'pointer',background:open?'#fff8e0':'transparent'}}>
+        <span style={{fontSize:11,color:'#b08a2a',fontWeight:700,letterSpacing:0.3}}>
+          ◎ Todos {open_items.length>0 && <span style={{background:'#f5a623',color:'#fff',borderRadius:8,padding:'0 5px',fontSize:9,fontWeight:700,marginLeft:3}}>{open_items.length}</span>}
+        </span>
+        {!open && preview && (
+          <span style={{flex:1,fontSize:11,color:'#a59985',overflow:'hidden',whiteSpace:'nowrap',textOverflow:'ellipsis'}}>{preview}</span>
+        )}
+        <span style={{marginLeft:'auto',fontSize:10,color:'#c8c0af'}}>{open?'▲':'▼'}</span>
+      </div>
+      {open && (
+        <div style={{padding:'0 12px 10px',display:'flex',flexDirection:'column',gap:5}}>
+          <div style={{display:'flex',gap:6}}>
+            <input ref={inputRef} value={input} onChange={e=>setInput(e.target.value)}
+              onKeyDown={e=>e.key==='Enter'&&add()}
+              placeholder="Add a todo…"
+              style={{flex:1,border:'1px solid #ead9a3',borderRadius:6,padding:'6px 9px',fontSize:12,fontFamily:'inherit',outline:'none',color:'#2a251f',background:'#fff'}}/>
+            <button onClick={add}
+              style={{background:'#2a251f',color:'#f5d76b',border:'none',padding:'6px 11px',borderRadius:6,fontSize:12,fontWeight:700,cursor:'pointer',fontFamily:'inherit'}}>＋</button>
+          </div>
+          <div style={{maxHeight:160,overflow:'auto',display:'flex',flexDirection:'column',gap:3}}>
+            {open_items.map(it=>(
+              <div key={it.id} style={{display:'flex',alignItems:'center',gap:7,padding:'5px 8px',borderRadius:6,border:'1px solid #f0e8d0',background:'#fff'}}>
+                <input type="checkbox" checked={false} onChange={()=>toggle(it.id)} style={{flexShrink:0,cursor:'pointer'}}/>
+                <span style={{flex:1,fontSize:12,color:'#2a251f',lineHeight:1.4}}>{it.text}</span>
+                <button onClick={()=>remove(it.id)} style={{background:'none',border:'none',color:'#d0c8b8',fontSize:12,cursor:'pointer',padding:'0 2px',flexShrink:0}}>✕</button>
+              </div>
+            ))}
+            {items.filter(i=>i.done).map(it=>(
+              <div key={it.id} style={{display:'flex',alignItems:'center',gap:7,padding:'5px 8px',borderRadius:6,background:'#fdf8f0',opacity:0.6}}>
+                <input type="checkbox" checked={true} onChange={()=>toggle(it.id)} style={{flexShrink:0,cursor:'pointer'}}/>
+                <span style={{flex:1,fontSize:12,color:'#a59985',textDecoration:'line-through'}}>{it.text}</span>
+                <button onClick={()=>remove(it.id)} style={{background:'none',border:'none',color:'#d0c8b8',fontSize:12,cursor:'pointer',padding:'0 2px',flexShrink:0}}>✕</button>
+              </div>
+            ))}
+            {!items.length && <div style={{fontSize:11,color:'#c8c0af',padding:'4px 2px'}}>No todos yet.</div>}
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function SessionNoteCard({session}) {
@@ -879,7 +1018,7 @@ function _categoriseUrl(url) {
   return {icon:'🔗', label:'Link'};
 }
 
-const VAULT_TOP_DIRS = ['AI-Systems','Engineering','Data','Research','Legal','Finance','Product','Operations','Meetings','Inbox','Notes','Hiring'];
+const VAULT_TOP_DIRS = ['Adi','AI-Systems','CX','IVDS','Inventory','Legal','Product','Growth','Amazon','Meetings','Inbox','People','Health','Hiring','Firmware','Finance','Research'];
 
 function _extractLinks(text) {
   if (!text) return {vaultPaths: [], urls: []};
@@ -892,9 +1031,9 @@ function _extractLinks(text) {
     const ctx = line.trim().slice(0, 80);
 
     // Full vault paths
-    const fullHits = line.match(/(?:~\/)?(?:obsidian-vault|vault)\/([^\s\)"'`\]]+\.md)/g) || [];
+    const fullHits = line.match(/(?:~\/)?obsidian-vault\/([^\s\)"'`\]]+\.md)/g) || [];
     fullHits.forEach(m => {
-      const p = m.replace(/^(?:~\/)?(?:obsidian-vault|vault)\//, '');
+      const p = m.replace(/^(?:~\/)?obsidian-vault\//, '');
       if (p && !vaultMap.has(p)) vaultMap.set(p, {path:p, context:ctx});
     });
 
@@ -1051,7 +1190,7 @@ function DocCard({item}) {
 }
 
 // ── Vault panel ─────────────────────────────────────────────────────────────
-const VAULT_ROOTS = ['AI-Systems','Engineering','Data','Research','Legal','Finance','Product','Operations','Meetings','Inbox'];
+const VAULT_ROOTS = ['Adi','AI-Systems','CX','IVDS','Inventory','Legal','Product','Growth','Amazon','Meetings','Inbox'];
 
 function VaultPanel() {
   const [path, setPath]       = React.useState('');
@@ -1257,18 +1396,9 @@ function VaultPanel() {
 
 // ── Todo panel ───────────────────────────────────────────────────────────────
 function TodoPanel() {
-  const [items, setItems]     = React.useState(null);
-  const [input, setInput]     = React.useState('');
+  const [items, persist]  = useTodos();
+  const [input, setInput] = React.useState('');
   const inputRef = React.useRef(null);
-
-  React.useEffect(() => {
-    _get('/todos' + _TQ).then(d => setItems(d || []));
-  }, []);
-
-  const persist = (next) => {
-    setItems(next);
-    fetch('/todos' + _TQ, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(next)});
-  };
 
   const add = () => {
     const t = input.trim();
@@ -1285,8 +1415,6 @@ function TodoPanel() {
       body: JSON.stringify({task: item.text})});
     remove(item.id);
   };
-
-  if (!items) return <div style={sEmptyState}>loading…</div>;
 
   const open = items.filter(i => !i.done);
   const done = items.filter(i => i.done);
@@ -1346,7 +1474,273 @@ function TodoPanel() {
   );
 }
 
+// ── Insights panel — timeline, costs, model health, doctor ──────────────────
+function InsightsPanel() {
+  const [sub, setSub] = React.useState('timeline');
+  const [timeline, setTimeline] = React.useState(null);
+  const [costs, setCosts] = React.useState(null);
+  const [health, setHealth] = React.useState(null);
+  const [doctor, setDoctor] = React.useState(null);
+  const [doctorLoading, setDoctorLoading] = React.useState(false);
+
+  React.useEffect(() => {
+    if (sub === 'timeline') {
+      const load = async () => { const d = await _get('/timeline?limit=60'); if (d) setTimeline(d); };
+      load();
+      const t = setInterval(load, 5000);
+      return () => clearInterval(t);
+    }
+    if (sub === 'costs') {
+      _get('/costs?days=7').then(d => d && setCosts(d));
+    }
+    if (sub === 'health') {
+      const load = async () => { const d = await _get('/model-health'); if (d) setHealth(d); };
+      load();
+      const t = setInterval(load, 5000);
+      return () => clearInterval(t);
+    }
+  }, [sub]);
+
+  const runDoctor = async () => {
+    setDoctorLoading(true);
+    const d = await _get('/doctor');
+    if (d) setDoctor(d);
+    setDoctorLoading(false);
+  };
+
+  const subBtnStyle = active => ({
+    background:'none', border:'none', borderBottom: active?'2px solid #b08a2a':'2px solid transparent',
+    padding:'6px 12px 8px', fontSize:11.5, fontWeight:active?700:500, color:active?'#2a251f':'#a59985',
+    cursor:'pointer', fontFamily:'inherit', marginBottom:'-1px',
+  });
+
+  const EVENT_COLOR = {dispatched:'#f5a623', completed:'#4caf50', blocked:'#e55a6a', timeout:'#9e9e9e', relaunched:'#4a90e2'};
+  const fmtTs = ts => ts ? ts.replace('T',' ').replace('Z','') : '';
+
+  return (
+    <div style={{flex:1,overflow:'hidden',display:'flex',flexDirection:'column'}}>
+      {/* sub-tab bar */}
+      <div style={{display:'flex',borderBottom:'1px solid #f0e8d0',padding:'0 24px',flexShrink:0}}>
+        {[['timeline','⚡ Timeline'],['costs','💰 Costs'],['health','🩺 Models'],['doctor','🔬 Doctor']].map(([k,l])=>(
+          <button key={k} onClick={()=>setSub(k)} style={subBtnStyle(sub===k)}>{l}</button>
+        ))}
+      </div>
+
+      <div style={{flex:1,overflow:'auto',padding:'16px 24px'}}>
+        {/* Timeline */}
+        {sub==='timeline' && (
+          !timeline ? <div style={sEmptyState}>loading…</div> :
+          timeline.length===0 ? <div style={sEmptyState}>No timeline events yet.</div> :
+          <div style={{display:'flex',flexDirection:'column',gap:4}}>
+            <div style={{fontSize:10,color:'#a59985',fontWeight:700,textTransform:'uppercase',letterSpacing:0.5,marginBottom:8}}>
+              Recent events · auto-refreshes
+            </div>
+            {timeline.map((ev,i) => (
+              <div key={i} style={{display:'flex',gap:10,padding:'8px 12px',borderRadius:7,border:'1px solid #f0e8d0',background:'#fff',alignItems:'flex-start'}}>
+                <span style={{width:8,height:8,borderRadius:'50%',background:EVENT_COLOR[ev.event]||'#ccc',flexShrink:0,marginTop:4}}/>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{display:'flex',gap:8,alignItems:'baseline',flexWrap:'wrap'}}>
+                    <span style={{fontSize:12,fontWeight:700,color:EVENT_COLOR[ev.event]||'#666',textTransform:'uppercase',letterSpacing:0.3}}>{ev.event}</span>
+                    <span style={{fontFamily:'"SF Mono",monospace',fontSize:11,color:'#2a251f'}}>{ev.session}</span>
+                    {ev.domain&&<span style={{fontSize:11,color:'#a59985'}}>· {ev.domain}</span>}
+                    {ev.model&&ev.model!=='claude'&&<span style={{fontSize:10,color:'#1a73e8',fontWeight:600,textTransform:'uppercase'}}>{ev.model}</span>}
+                  </div>
+                  {ev.result_summary&&<div style={{fontSize:11,color:'#5a4820',marginTop:2,lineHeight:1.4,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{ev.result_summary}</div>}
+                </div>
+                <div style={{fontSize:10,color:'#c8b878',flexShrink:0,textAlign:'right'}}>
+                  {ev.duration_s!=null&&<div>{ev.duration_s}s</div>}
+                  <div style={{fontFamily:'"SF Mono",monospace'}}>{fmtTs(ev.ts).slice(11,16)}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Costs */}
+        {sub==='costs' && (
+          !costs ? <div style={sEmptyState}>loading…</div> :
+          Object.keys(costs).length===0 ? <div style={sEmptyState}>No cost data yet. Tasks will appear here after completion.</div> :
+          <div>
+            <div style={{fontSize:10,color:'#a59985',fontWeight:700,textTransform:'uppercase',letterSpacing:0.5,marginBottom:12}}>Last 7 days · per domain</div>
+            <table style={{width:'100%',borderCollapse:'collapse'}}>
+              <thead>
+                <tr style={{background:'#fdf5dc'}}>
+                  {['Domain','Tasks','Avg dur','Total','Models'].map(h=>(
+                    <th key={h} style={{textAlign:'left',padding:'7px 12px',fontSize:10.5,fontWeight:700,color:'#7c6430',textTransform:'uppercase',letterSpacing:0.4,borderBottom:'1px solid #ead9a3'}}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {Object.entries(costs).map(([dom, d]) => (
+                  <tr key={dom} style={{borderBottom:'1px solid #f5f0e8'}}>
+                    <td style={{padding:'8px 12px',fontSize:12.5,fontWeight:600,color:'#2a251f',fontFamily:'"SF Mono",monospace'}}>{dom}</td>
+                    <td style={{padding:'8px 12px',fontSize:12.5,color:'#2a251f'}}>{d.count}</td>
+                    <td style={{padding:'8px 12px',fontSize:12.5,color:'#5a4820'}}>{d.avg_duration_s}s</td>
+                    <td style={{padding:'8px 12px',fontSize:12.5,color:'#5a4820'}}>{d.total_duration_s}s</td>
+                    <td style={{padding:'8px 12px',fontSize:11.5,color:'#a59985'}}>
+                      {Object.entries(d.models||{}).map(([m,n])=>`${m}:${n}`).join(' ')}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* Model Health */}
+        {sub==='health' && (
+          !health ? <div style={sEmptyState}>loading…</div> :
+          <div>
+            <div style={{fontSize:10,color:'#a59985',fontWeight:700,textTransform:'uppercase',letterSpacing:0.5,marginBottom:4}}>Model health · cooldown tracking</div>
+            <div style={{fontSize:12,color:'#5a4820',background:'#fdf8ec',border:'1px solid #ead9a3',borderRadius:6,padding:'8px 12px',marginBottom:16,fontFamily:'"SF Mono",monospace'}}>{health.summary||'no data'}</div>
+            {Object.entries(health.state||{}).length===0
+              ? <div style={{fontSize:12,color:'#c8c0af'}}>No failures recorded. Cooldowns activate on repeated failures.</div>
+              : Object.entries(health.state).map(([model,info])=>(
+                <div key={model} style={{display:'flex',gap:12,padding:'10px 14px',borderRadius:8,border:'1px solid #f0e8d0',background:'#fff',marginBottom:6,alignItems:'center'}}>
+                  <span style={{width:8,height:8,borderRadius:'50%',background:info.cooldown_until?'#e55a6a':'#4caf50',flexShrink:0}}/>
+                  <div style={{flex:1}}>
+                    <div style={{fontSize:13,fontWeight:700,color:'#2a251f',fontFamily:'"SF Mono",monospace'}}>{model}</div>
+                    <div style={{fontSize:11,color:'#a59985',marginTop:2}}>
+                      {info.failures} failure{info.failures!==1?'s':''}{info.last_failure&&` · last: ${fmtTs(info.last_failure).slice(0,16)}`}
+                    </div>
+                    {info.cooldown_until&&<div style={{fontSize:11,color:'#e55a6a',marginTop:2}}>cooldown until {fmtTs(info.cooldown_until).slice(11,16)}</div>}
+                  </div>
+                </div>
+              ))
+            }
+          </div>
+        )}
+
+        {/* Doctor */}
+        {sub==='doctor' && (
+          <div>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}}>
+              <div style={{fontSize:10,color:'#a59985',fontWeight:700,textTransform:'uppercase',letterSpacing:0.5}}>System diagnostics</div>
+              <button onClick={runDoctor} disabled={doctorLoading}
+                style={{background:'#2a251f',color:'#f5d76b',border:'none',padding:'6px 16px',borderRadius:6,fontSize:11.5,fontWeight:700,cursor:doctorLoading?'default':'pointer',fontFamily:'inherit',opacity:doctorLoading?0.5:1}}>
+                {doctorLoading?'Running…':'▶ Run Doctor'}
+              </button>
+            </div>
+            {!doctor ? (
+              <div style={{color:'#c8c0af',fontSize:12,lineHeight:1.8}}>
+                Click "Run Doctor" to check server health, workers, stale tasks, binaries, tokens, and disk usage.
+              </div>
+            ) : (
+              <div>
+                <div style={{fontSize:12,fontWeight:700,padding:'8px 12px',borderRadius:6,marginBottom:12,
+                  background:doctor.ok?'#e8f5e9':'#fff0f0',color:doctor.ok?'#2e7d32':'#c62828',border:`1px solid ${doctor.ok?'#c8e6c9':'#ffcdd2'}`}}>
+                  {doctor.summary||'—'}
+                </div>
+                {Object.entries(doctor.checks||{}).map(([label,c])=>(
+                  <div key={label} style={{display:'flex',gap:10,padding:'8px 12px',borderRadius:7,border:'1px solid #f0e8d0',background:'#fff',marginBottom:5,alignItems:'flex-start'}}>
+                    <span style={{fontSize:12,flexShrink:0,lineHeight:1.4}}>{c.pass?'✓':'✗'}</span>
+                    <div>
+                      <span style={{fontSize:11.5,fontWeight:700,color:'#2a251f',fontFamily:'"SF Mono",monospace',marginRight:8}}>{label}</span>
+                      <span style={{fontSize:11.5,color:c.pass?'#2e7d32':'#c62828'}}>{c.detail}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Main CleanSplit component ────────────────────────────────────────────────
+// ── Permission approvals overlay ────────────────────────────────────────────
+function PermissionApprovals() {
+  const [requests, setRequests] = React.useState([]);
+  const [deciding, setDeciding] = React.useState({});
+
+  const poll = React.useCallback(async () => {
+    const data = await _get('/permission-requests' + _TQ);
+    if (Array.isArray(data)) setRequests(data);
+  }, []);
+
+  React.useEffect(() => {
+    poll();
+    const t = setInterval(poll, 3000);
+    return () => clearInterval(t);
+  }, [poll]);
+
+  const decide = async (id, approved) => {
+    setDeciding(prev => ({ ...prev, [id]: true }));
+    try {
+      await fetch('/permission-decision/' + encodeURIComponent(id) + _TQ, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ approved }),
+      });
+      setRequests(prev => prev.filter(r => r.id !== id));
+    } catch(e) {
+      // on error just re-enable the buttons
+    }
+    setDeciding(prev => { const n = { ...prev }; delete n[id]; return n; });
+  };
+
+  if (!requests.length) return null;
+
+  return (
+    <div style={{ position:'fixed', top:12, right:12, zIndex:1000, display:'flex', flexDirection:'column', gap:8, maxWidth:380 }}>
+      {requests.map(req => {
+        const busy = deciding[req.id];
+        const cmd  = req.command || req.cmd || '';
+        const who  = req.session || req.worker || 'worker';
+        return (
+          <div key={req.id} style={{
+            background:'#fff', border:'1px solid #e4e0d8', borderRadius:8,
+            padding:'12px 14px', boxShadow:'0 4px 16px rgba(0,0,0,0.12)',
+            fontFamily:'-apple-system,"Inter",sans-serif',
+          }}>
+            <div style={{ display:'flex', alignItems:'flex-start', gap:8, marginBottom:8 }}>
+              <span style={{ fontSize:16, color:'#d97706', flexShrink:0, lineHeight:1.3 }}>⚠</span>
+              <div style={{ flex:1, minWidth:0 }}>
+                <div style={{ fontSize:12.5, color:'#2a251f', fontWeight:600, marginBottom:4 }}>
+                  <span style={{ fontFamily:'"SF Mono","Fira Code",monospace', color:'#3d7a3d' }}>{who}</span>
+                  {' '}wants to run:
+                </div>
+                <div style={{
+                  fontFamily:'"SF Mono","Fira Code",monospace', fontSize:11.5,
+                  color:'#3d3d3d', background:'#f5f0e8', borderRadius:5,
+                  padding:'6px 9px', overflowX:'hidden', whiteSpace:'pre',
+                  textOverflow:'ellipsis', overflow:'hidden', maxWidth:'100%',
+                }}>
+                  {'$ ' + (cmd.length > 120 ? cmd.slice(0, 117) + '…' : cmd)}
+                </div>
+              </div>
+            </div>
+            <div style={{ display:'flex', gap:6, justifyContent:'flex-end' }}>
+              <button
+                disabled={busy}
+                onClick={() => decide(req.id, false)}
+                style={{
+                  background:'#fff', border:'1px solid #d4d0c8', color:'#3d3830',
+                  padding:'5px 12px', borderRadius:5, fontSize:11.5, fontWeight:500,
+                  cursor: busy ? 'not-allowed' : 'pointer', fontFamily:'inherit', opacity: busy ? 0.5 : 1,
+                }}>
+                Deny
+              </button>
+              <button
+                disabled={busy}
+                onClick={() => decide(req.id, true)}
+                style={{
+                  background:'#16a34a', color:'#fff', border:'none',
+                  padding:'5px 12px', borderRadius:5, fontSize:11.5, fontWeight:600,
+                  cursor: busy ? 'not-allowed' : 'pointer', fontFamily:'inherit', opacity: busy ? 0.5 : 1,
+                }}>
+                Approve
+              </button>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function CleanSplit({selected=0, onSelect=()=>{}}) {
   const tick     = useTickerClock();
   const workers  = useWorkers();
@@ -1361,7 +1755,17 @@ function CleanSplit({selected=0, onSelect=()=>{}}) {
   const paneReady  = React.useRef(false);
 
   const worker      = workers[sel] || workers[0] || null;
-  const paneHtml    = usePaneHtml(worker ? worker.session : null);
+
+  // Background snapshot cache — all sessions pre-fetched so switching is instant
+  const allSessions = React.useMemo(() => workers.map(w => w.session), [workers]);
+  const paneSnaps   = usePaneSnapshots(allSessions);
+
+  // Live pane for selected worker (fast 2500ms refresh)
+  const livePaneHtml = usePaneHtml(worker ? worker.session : null);
+
+  // Show live if available, fall back to pre-fetched snapshot (no blank flash on switch)
+  const paneHtml    = livePaneHtml || (worker ? (paneSnaps[worker.session]?.html || '') : '');
+
   const paneHtmlRef = React.useRef(null);
   const [dismissedCards, setDismissedCards] = React.useState(new Set());
   const [paneRawText, setPaneRawText] = React.useState('');
@@ -1384,11 +1788,12 @@ function CleanSplit({selected=0, onSelect=()=>{}}) {
       paneReady.current = false;
       prevSess.current = worker.session;
       setDismissedCards(new Set());
-      setPaneRawText('');
+      // Don't clear paneRawText — snapshot keeps it populated during transition
     }
   }, [worker]);
 
   const [slackSent, setSlackSent] = React.useState('');
+  const [dispatched, setDispatched] = React.useState('');
 
   const handleSend = async (force=false) => {
     if (!worker || !replyRef.current) return;
@@ -1398,7 +1803,11 @@ function CleanSplit({selected=0, onSelect=()=>{}}) {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({task:msg, session:worker.session, force})
     });
-    if (r.ok) replyRef.current.value = '';
+    if (r.ok) {
+      replyRef.current.value = '';
+      setDispatched((force ? '⚡ force-dispatched' : '✓ dispatched') + ' → ' + worker.session);
+      setTimeout(() => setDispatched(''), 2500);
+    }
   };
 
   const handleSlackUpdate = async () => {
@@ -1425,6 +1834,7 @@ function CleanSplit({selected=0, onSelect=()=>{}}) {
   return (
     <div style={{...sRoot, gridTemplateColumns: gridCols}}>
       <QuestionsOverlay/>
+      <PermissionApprovals/>
       {metaWorker && <MetaModal worker={metaWorker} onClose={()=>setMetaWorker(null)}/>}
 
       {/* ── left: task list ── */}
@@ -1478,6 +1888,9 @@ function CleanSplit({selected=0, onSelect=()=>{}}) {
             const label     = w.displayName || (w.task && w.task!==w.session ? w.task : null);
             const timestamp = fmtDispatchTime(w.age);
             const hasAlert  = w.status==='blocked'||w.status==='missing'||w.auth==='auth_error';
+            const doneBadge  = !isBusy && w.lastStatus==='done';
+            const runBadge   = !isBusy && w.lastStatus==='pending';
+            const modelBadge = w.model && w.model !== 'claude' ? w.model : null;
             return (
               <div key={w.session} onClick={()=>{setSel(origIdx);onSelect(origIdx);setRightTab('live');}}
                    style={{...sTaskRow,background:isSel?'#fff8e0':hasAlert?'#fff8f0':'transparent'}}>
@@ -1491,10 +1904,15 @@ function CleanSplit({selected=0, onSelect=()=>{}}) {
                 <div style={{flex:1,minWidth:0}}>
                   {label ? (
                     <>
-                      <div style={{fontSize:13,color:'#2a251f',fontWeight:500,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{label}</div>
+                      <div style={{fontSize:13,color:'#2a251f',fontWeight:500,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',display:'flex',alignItems:'center',gap:5}}>
+                        <span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{label}</span>
+                        {doneBadge && <span style={{flexShrink:0,fontSize:9,color:'#2e7d32',fontWeight:700,background:'#e8f5e9',padding:'1px 5px',borderRadius:3}}>done</span>}
+                        {runBadge  && <span style={{flexShrink:0,fontSize:9,color:'#e65100',fontWeight:700,background:'#fff3e0',padding:'1px 5px',borderRadius:3}}>running</span>}
+                      </div>
                       <div style={{fontSize:11,color:'#a59985',marginTop:1,display:'flex',gap:5,alignItems:'center'}}>
                         <span style={{fontFamily:'"SF Mono",monospace'}}>{w.session}</span>
                         <span>·</span><span>{w.domain}</span>
+                        {modelBadge && <><span>·</span><span style={{color:'#1a73e8',fontWeight:600,fontSize:9,textTransform:'uppercase',letterSpacing:0.3}}>{modelBadge}</span></>}
                         {isBusy && <><span>·</span><span style={{fontVariantNumeric:'tabular-nums'}}>{fmtMMSS(w.age+tick)}</span></>}
                         {timestamp && !isBusy && <><span>·</span><span>{timestamp}</span></>}
                       </div>
@@ -1504,6 +1922,7 @@ function CleanSplit({selected=0, onSelect=()=>{}}) {
                       <div style={{fontSize:13,color:'#2a251f',fontWeight:600,fontFamily:'"SF Mono",monospace',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{w.session}</div>
                       <div style={{fontSize:11,color:'#a59985',marginTop:1,display:'flex',gap:5,alignItems:'center'}}>
                         <span>{w.domain}</span>
+                        {modelBadge && <><span>·</span><span style={{color:'#1a73e8',fontWeight:600,fontSize:9,textTransform:'uppercase',letterSpacing:0.3}}>{modelBadge}</span></>}
                         {isBusy && <><span>·</span><span style={{fontVariantNumeric:'tabular-nums'}}>{fmtMMSS(w.age+tick)}</span></>}
                         {timestamp && !isBusy && <><span>·</span><span>{timestamp}</span></>}
                       </div>
@@ -1519,6 +1938,7 @@ function CleanSplit({selected=0, onSelect=()=>{}}) {
           })}
         </div>}
 
+        {!leftCollapsed && <OrchmuxNote/>}
         {!leftCollapsed && <DispatchPanel domains={domains}/>}
       </div>
 
@@ -1527,9 +1947,9 @@ function CleanSplit({selected=0, onSelect=()=>{}}) {
         <div style={{borderLeft:'1px solid #f0e8d0',display:'flex',flexDirection:'column',alignItems:'center',padding:'16px 0',gap:12,background:'#fffdf5',width:36}}>
           <button onClick={()=>setRightCollapsed(false)} title="Expand pane"
             style={{background:'none',border:'none',color:'#a59985',fontSize:16,cursor:'pointer',padding:4}}>‹</button>
-          {['⬡','✓','⚙','📂','🗂','☐'].map((icon,i) => (
+          {['⬡','✓','⚙','📂','🗂','☐','📊'].map((icon,i) => (
             <span key={i} style={{fontSize:13,color:'#c8c0af',writingMode:'vertical-rl',cursor:'pointer'}}
-              onClick={()=>{setRightCollapsed(false);setRightTab(['live','results','manage','vault','docs','todo'][i]);}}>{icon}</span>
+              onClick={()=>{setRightCollapsed(false);setRightTab(['live','results','manage','vault','docs','todo','insights'][i]);}}>{icon}</span>
           ))}
         </div>
       ) : (
@@ -1541,6 +1961,7 @@ function CleanSplit({selected=0, onSelect=()=>{}}) {
           {rTabBtn('vault', '📂 Vault')}
           {rTabBtn('docs', '🗂 Docs')}
           {rTabBtn('todo', '☐ Notes')}
+          {rTabBtn('insights', '📊 Insights')}
           {worker && rightTab==='live' && (
             <div style={{marginLeft:'auto',padding:'0 16px 10px',display:'flex',gap:10,alignItems:'center',fontSize:11.5,color:'#8a8072'}}>
               <span style={{width:7,height:7,borderRadius:'50%',background:STATUS_DOT[worker.status]||'#ccc'}}/>
@@ -1555,21 +1976,37 @@ function CleanSplit({selected=0, onSelect=()=>{}}) {
           )}
         </div>
 
-        {rightTab==='live' && (
-          !worker ? (
+        {/* Live tab — always mounted so refs/intervals survive tab switches; hidden via display:none */}
+        <div style={{display: rightTab==='live' ? 'flex' : 'none', flexDirection:'column', flex:1, overflow:'hidden'}}>
+          {!worker ? (
             <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',color:'#c8c0af',fontSize:13}}>
               Select a task on the left to view its live terminal
             </div>
           ) : (
             <>
               <div style={{padding:'14px 28px 10px',borderBottom:'1px solid #f8f0e0',flexShrink:0}}>
-                <div style={{fontSize:16,fontWeight:600,color:'#2a251f',letterSpacing:-0.2,lineHeight:1.4}}>{worker.task||worker.session}</div>
+                <div style={{fontSize:16,fontWeight:600,color:'#2a251f',letterSpacing:-0.2,lineHeight:1.4,display:'flex',alignItems:'center',gap:8}}>
+                  {worker.task||worker.session}
+                  {worker.lastStatus==='done' && <span style={{fontSize:10,color:'#2e7d32',fontWeight:700,background:'#e8f5e9',padding:'2px 6px',borderRadius:4}}>done</span>}
+                </div>
                 <div style={{fontSize:11.5,color:'#a59985',marginTop:4}}>
                   {worker.domain} · {worker.model}
                   {fmtDispatchTime(worker.age) && <> · dispatched {fmtDispatchTime(worker.age)}</>}
+                  {worker.lastTime && <> · last: {worker.lastTime.substring(11,16)} UTC</>}
                 </div>
               </div>
               <SessionNoteCard session={worker.session}/>
+              {(worker.status==='waiting' || worker.current_task?.startsWith('Q:')) && (
+                <div style={{margin:'0 14px 0',padding:'10px 14px',background:'#fffbea',border:'2px solid #f5a623',borderRadius:8,display:'flex',alignItems:'flex-start',gap:10,flexShrink:0}}>
+                  <span style={{fontSize:18,lineHeight:1}}>❓</span>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:10.5,fontWeight:700,color:'#b07a00',textTransform:'uppercase',letterSpacing:0.6,marginBottom:3}}>Worker is asking</div>
+                    <div style={{fontSize:13,color:'#2a251f',lineHeight:1.45,wordBreak:'break-word'}}>
+                      {worker.current_task?.replace(/^Q:\s*/,'') || 'Scroll down in the terminal to see the question'}
+                    </div>
+                  </div>
+                </div>
+              )}
               <div ref={paneRef} style={sPane}>
                 {!paneHtml && <div style={{color:'#c8c0af',fontFamily:'"SF Mono",monospace',fontSize:11.5}}>waiting for pane output…</div>}
                 <div ref={paneHtmlRef} className="clean-pane"/>
@@ -1600,16 +2037,22 @@ function CleanSplit({selected=0, onSelect=()=>{}}) {
                   ⌘↵ send · <span style={{color:'#c8a0a0'}}>⚡ force</span> interrupts a busy worker
                   {slackSent && <span style={{marginLeft:8,color:slackSent.startsWith('✓')?'#2e7d32':'#b85c00'}}>{slackSent}</span>}
                 </div>
+                {dispatched && (
+                  <div style={{marginTop:6,padding:'6px 12px',background:'#e8f5e9',border:'1px solid #a5d6a7',borderRadius:6,fontSize:11.5,fontWeight:700,color:'#2e7d32',letterSpacing:0.1}}>
+                    {dispatched}
+                  </div>
+                )}
               </div>
             </>
-          )
-        )}
+          )}
+        </div>
 
         {rightTab==='results' && <ResultsPanel/>}
         {rightTab==='manage' && <ManagePanel workers={workers} domains={domains}/>}
         {rightTab==='vault' && <VaultPanel/>}
         {rightTab==='docs' && <WorkerDocsPanel worker={worker} paneRawText={paneRawText}/>}
         {rightTab==='todo' && <TodoPanel/>}
+        {rightTab==='insights' && <InsightsPanel/>}
       </div>
       )}
     </div>
