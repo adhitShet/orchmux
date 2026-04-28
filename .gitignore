@@ -14,3 +14,4 @@ session-ids/
 server/service-context.yaml
 memory.md
 .env
+lib/__pycache__/

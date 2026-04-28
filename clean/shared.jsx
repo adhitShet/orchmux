@@ -30,9 +30,14 @@ function cleanTermOutput(s) {
     const t = line.trim();
     if (t.length > 0 && /^[─-╿\s]+$/.test(t)) continue;
     if (/^[-─━=╌]{4,}$/.test(t)) continue;
+    if (/^[│╭╮╰╯]/.test(t)) continue;          // codex box-drawing header
     if (/^\[\?[0-9]+[hl]/.test(t)) continue;
     if (/^\x1b/.test(t)) continue;
-    if (/^[❯>$#]\s*$/.test(t)) continue;
+    if (/^[❯›>$#]\s*$/.test(t)) continue;       // claude ❯ and codex/kimi › prompts
+    if (/^gpt-[0-9]/.test(t)) continue;         // codex status bar: "gpt-5.5 high · ~/path"
+    if (/OpenAI Codex|>_ OpenAI|Kimi CLI|>_ Kimi/.test(t)) continue;
+    if (/^Tip:|Use \/fast|Use \/skills|\/skills to list/.test(t)) continue;
+    if (/model to change|\/model to change/.test(t)) continue;
     if (t === '') { blanks++; if (blanks <= 1) out.push(''); continue; }
     blanks = 0; out.push(line);
   }
@@ -138,6 +143,43 @@ function mdParse(raw) {
   return html.join('\n');
 }
 
+// ── Background snapshot cache — pre-fetches ALL workers so switching is instant
+let _paneSnaps = {};  // session -> {html, raw}
+
+function usePaneSnapshots(sessions) {
+  const sessKey = sessions.join(',');
+  const [snaps, setSnaps] = React.useState(_paneSnaps);
+
+  React.useEffect(() => {
+    if (!sessions || sessions.length === 0) return;
+    let alive = true;
+
+    const fetchOne = async (session) => {
+      const d = await _get('/pane/' + encodeURIComponent(session) + _TQA + 'lines=300');
+      if (!alive || !d || !d.output) return;
+      const cleaned = cleanTermOutput(stripAnsi(d.output));
+      const html = mdParse(cleaned);
+      _paneSnaps = { ..._paneSnaps, [session]: { html, raw: cleaned } };
+      if (alive) setSnaps(s => ({ ...s, [session]: { html, raw: cleaned } }));
+    };
+
+    // Stagger initial load so we don't hammer the server
+    sessions.forEach((s, i) => setTimeout(() => alive && fetchOne(s), i * 250));
+
+    // Cycle: refresh each session every 2500ms (one per tick, rotating)
+    let idx = 0;
+    const interval = setInterval(() => {
+      if (!alive || sessions.length === 0) return;
+      fetchOne(sessions[idx % sessions.length]);
+      idx++;
+    }, 2500);
+
+    return () => { alive = false; clearInterval(interval); };
+  }, [sessKey]);
+
+  return snaps;
+}
+
 // ── Pane rendering hook — returns rendered HTML string ──────────────────────
 function usePaneHtml(session) {
   const [html, setHtml] = React.useState('');
@@ -194,6 +236,8 @@ async function _fetchWorkers() {
         if (d.auth)          w.auth        = d.auth;
         if (d.slack_target !== undefined) w.slackTarget = d.slack_target;
         if (!w.task && d.last_task) w.task = d.last_task;
+        if (d.last_task_status) w.lastStatus = d.last_task_status;
+        if (d.last_task_time)   w.lastTime   = d.last_task_time;
       }
     }
   }
@@ -239,16 +283,19 @@ function useDomains() {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-const LIVE_SKILLS = [
-  {n:'deploy',c:'deploy'},{n:'hotfix-cycle',c:'deploy'},{n:'deploy-broadcast',c:'deploy'},
-  {n:'git-workflow',c:'code'},{n:'fastapi-patterns',c:'code'},{n:'postgresql',c:'code'},
-  {n:'code-audit',c:'code'},{n:'debug',c:'code'},{n:'react-patterns',c:'code'},
-  {n:'metabase',c:'data'},{n:'snowflake',c:'data'},
-  {n:'research',c:'ops'},{n:'triage',c:'ops'},{n:'error-digest',c:'ops'},
-  {n:'google-workspace',c:'docs'},{n:'pptx-design',c:'docs'},
-  {n:'standup',c:'cmd'},{n:'architect',c:'cmd'},{n:'brainstorm',c:'cmd'},
-  {n:'patent-brief',c:'legal'},
-];
+// LIVE_SKILLS — populated lazily; components should prefer useSkills() for reactivity
+let LIVE_SKILLS = [];
+
+function useSkills() {
+  const [skills, setSkills] = React.useState(LIVE_SKILLS);
+  React.useEffect(() => {
+    if (LIVE_SKILLS.length > 0) { setSkills(LIVE_SKILLS); return; }
+    _get('/skills').then(s => {
+      if (Array.isArray(s) && s.length > 0) { LIVE_SKILLS = s; setSkills(s); }
+    }).catch(() => {});
+  }, []);
+  return skills;
+}
 
 function useTickerClock() {
   const [n, set] = React.useState(0);
@@ -287,7 +334,7 @@ function renderParsedHtml(el, html) {
 }
 
 Object.assign(window, {
-  useWorkers, useDomains, usePaneHtml, LIVE_SKILLS,
+  useWorkers, useDomains, usePaneHtml, usePaneSnapshots, useSkills, LIVE_SKILLS,
   stripAnsi, cleanTermOutput, mdParse, _mdInl, renderParsedHtml,
   useTickerClock, fmtAgeShort, fmtMMSS, fmtDispatchTime, STATUS_LABEL, STATUS_DOT,
   _TQ, _TQA, _get,

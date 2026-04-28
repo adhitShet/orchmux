@@ -129,3 +129,88 @@ Your domain's `CLAUDE.md` (at `worker/{domain}/CLAUDE.md`) contains additional i
 | Push a document | `mcp__orchmux__vault_write` or write to `~/vault/` |
 | Check injected credentials | Read the block above your task text |
 | Resume after restart | Your history is intact — check recent messages |
+
+---
+
+## iOS App Setup
+
+orchmux ships a native iOS app that lets you monitor workers, dispatch tasks, review questions, and browse Vault notes from your phone.
+
+### Prerequisites
+
+- Mac running Xcode 15+
+- iPhone with iOS 17+
+- orchmux server running and accessible from your phone (via local network, Tailscale, or an exposed port)
+
+### Build and install
+
+1. **Clone the repo** and open the Xcode project:
+   ```bash
+   git clone https://github.com/adhitShet/orchmux.git
+   open orchmux/ios/Orchmux.xcodeproj
+   ```
+
+2. **Set your Team** in Xcode:
+   - Select the `Orchmux` target → Signing & Capabilities → Team → your Apple developer account
+   - The bundle ID is `com.yourname.orchmux` — change this to anything unique (e.g. `com.acme.orchmux`)
+
+3. **Select your device** in the Xcode toolbar and press **Run** (⌘R)
+
+4. On first launch, iOS may prompt "Untrusted Developer". Go to **Settings → General → VPN & Device Management** and trust your developer account.
+
+### Connecting to your orchmux server
+
+The app needs HTTPS or plain HTTP access to your orchmux server on port 9889.
+
+**Option A — Same local network (simplest)**
+- Start orchmux: `./orchmux.sh start`
+- In the iOS app → Settings → Server URL, enter `http://<your-mac-local-ip>:9889`
+  - Find your Mac's local IP: `ipconfig getifaddr en0`
+
+**Option B — Tailscale (recommended for remote access)**
+- Install Tailscale on both your Mac and iPhone
+- Start orchmux with the Tailscale IP:
+  ```bash
+  ORCHMUX_BIND_HOST=0.0.0.0 ./orchmux.sh start
+  ```
+- In the iOS app → Settings → Server URL, enter `http://<tailscale-ip>:9889`
+  - Find your Mac's Tailscale IP: `tailscale ip -4`
+
+**Option C — Self-signed HTTPS (for Tailscale or LAN with cert)**
+- Generate a cert/key pair for your IP:
+  ```bash
+  cd orchmux/server
+  openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes \
+    -subj "/CN=orchmux" -addext "subjectAltName=IP:<your-ip>"
+  ```
+- orchmux server auto-detects `cert.pem`/`key.pem` and serves HTTPS
+- In iOS app → Settings → Server URL, enter `https://<your-ip>:9889`
+- **Trust the cert on iOS:** AirDrop `cert.pem` to your phone → tap to install → Settings → General → About → Certificate Trust Settings → enable it
+
+### Vault (Obsidian notes)
+
+The iOS app can browse and edit notes in your Obsidian vault if you have one configured. Set the vault path via:
+
+```bash
+export ORCHMUX_VAULT=~/your-vault-name
+./orchmux.sh start
+```
+
+The app fetches the vault location from `/vault-info` at launch and populates Settings automatically.
+
+### Dashboard token (optional)
+
+If you set `ORCHMUX_DASHBOARD_TOKEN` in your environment, the iOS app needs to know it:
+
+```
+iOS app → Settings → Vault Token → paste your token
+```
+
+### Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| "Connection refused" | Check server is running: `./orchmux.sh status` |
+| Workers show offline | Correct URL? Try `curl http://<ip>:9889/health` from a browser |
+| HTTPS cert error | Install cert via AirDrop + trust it in iOS Settings |
+| Vault shows empty | Correct `ORCHMUX_VAULT` path? Check `/vault-info` endpoint |
