@@ -1,6 +1,6 @@
 # orchmux
 
-**A fleet manager for AI workers.** Run a dozen Claude Code sessions in parallel on your own server, dispatch tasks from a web dashboard or Telegram, watch them work live, and get completions pushed to your phone — no cloud infra, no framework boilerplate, no per-invocation cost.
+**A fleet manager for AI workers.** Run a dozen Claude Code sessions in parallel on your own server, dispatch tasks from a web dashboard, Telegram, or native iOS app, watch them work live, and get completions pushed to your phone — no cloud infra, no framework boilerplate, no per-invocation cost.
 
 ---
 
@@ -42,7 +42,7 @@ That's orchmux.
 
 ## Who is this for?
 
-- You already run Claude Code or Codex in the terminal
+- You already run Claude Code, Codex, or Kimi in the terminal
 - Your tasks take minutes or hours — long enough that you want to do something else while they run
 - You want to dispatch from your phone and get notified when work is done
 - You don't want to write Python agent frameworks just to run a few AI sessions in parallel
@@ -52,15 +52,15 @@ That's orchmux.
 
 ## Core concepts
 
-**Workers** are named tmux sessions running Claude Code (or any AI CLI). They're persistent — they have their own context, their own domain, their own task history.
+**Workers** are named tmux sessions running Claude Code (or any AI CLI — Codex and Kimi are also supported). They're persistent — they have their own context, their own domain, their own task history.
 
-**Domains** are logical groupings (engineering, data, research, finance, etc.). When you dispatch a task, orchmux routes it to an idle worker in the right domain based on keyword matching — or queues it if all workers are busy.
+**Domains** are logical groupings (engineering, data, research, etc.). When you dispatch a task, orchmux routes it to an idle worker in the right domain based on keyword matching — or queues it if all workers are busy.
 
 **Asking** — when a worker hits a decision it can't make alone (e.g. "Should I include NULL rows?"), it surfaces the question to the dashboard and Telegram instead of guessing. You answer, it resumes.
 
 **Session resume** — if a worker crashes or the server restarts, orchmux saves the Claude Code session ID before exiting, and resumes it with `claude --resume <id>`. The worker picks up mid-conversation with full context intact.
 
-**Vault** — workers can push markdown documents (summaries, runbooks, analysis) to a browsable file store. You browse and edit from the dashboard.
+**Vault** — workers can push markdown documents (summaries, runbooks, analysis) to a browsable file store. You browse and edit from the dashboard or the iOS app.
 
 ---
 
@@ -70,7 +70,7 @@ That's orchmux.
 
 | Feature | tmux alone | orchmux |
 |---|---|---|
-| Dispatch tasks remotely | ❌ must be at terminal | ✅ Telegram, web UI, API |
+| Dispatch tasks remotely | ❌ must be at terminal | ✅ Telegram, web UI, iOS app, API |
 | Know when a task is done | ❌ watch the screen | ✅ push notification + log |
 | Queue tasks for busy workers | ❌ manual | ✅ automatic |
 | Route by domain | ❌ manual | ✅ keyword auto-routing |
@@ -105,7 +105,7 @@ That's orchmux.
 ## How it works
 
 ```
-You (Telegram / Web Dashboard / API)
+You (Telegram / Web Dashboard / iOS App / API)
            │
            ▼
   ┌─────────────────────┐
@@ -116,7 +116,7 @@ You (Telegram / Web Dashboard / API)
            ▼
   ┌──────────────────────────────────────────────┐
   │  worker-1 (tmux)  │  worker-2  │  worker-N  │
-  │  Claude Code      │  Claude    │  Codex     │
+  │  Claude Code      │  Codex     │  Kimi CLI  │
   └────────┬──────────┴────────────┴────────────┘
            │  [DONE] detected
            ▼
@@ -125,7 +125,7 @@ You (Telegram / Web Dashboard / API)
   └────────┬────────────┘
            │  POST /complete
            ▼
-  Telegram notification + dashboard update
+  Telegram notification + dashboard update + iOS push
 ```
 
 ---
@@ -141,11 +141,43 @@ Structured completion summaries: what changed, files modified with +/- line coun
 ### Vault (📂 Vault tab)
 Browse and edit markdown documents your workers produce. Split raw-editor + live preview, Export to Doc. Organized by domain folder (Architecture, Runbooks, Logs, etc.).
 
-### Docs (🗂 Docs tab)
-Auto-generated documentation from worker outputs. Workers can push structured docs directly; humans can search and browse.
+### Insights panel
+Live metrics across your fleet:
+- **Timeline** — chronological dispatch/complete/blocked events per worker
+- **Costs** — task count and average duration by domain over the last 7 days
+- **Model health** — per-model failure tracking and automatic cooldown/fallback
+- **Doctor** — system health checks (server, watcher, tmux, Claude Code)
+
+### iOS native app
+A native Swift app for iPhone — full orchmux from your pocket:
+- Worker dashboard with live status and pane output
+- Dispatch tasks (with domain auto-routing)
+- Answer questions from blocked workers
+- Browse Vault notes and todos
+- Configurable server URL, vault token, Obsidian vault path
+
+See [AGENTS.md § iOS App Setup](AGENTS.md#ios-app-setup) for build and connection instructions.
 
 ### Notes (☐ Notes tab)
 Free-form scratchpad tied to the current worker session — annotate, flag issues, leave follow-up thoughts.
+
+### Multi-model workers
+Workers aren't limited to Claude Code. Configure any worker to use **Codex** or **Kimi CLI** — orchmux detects their idle prompts and dispatches correctly.
+
+```yaml
+workers:
+  engineering:
+    sessions: [claude-worker-1]
+    model: claude          # Claude Code
+
+  codegen:
+    sessions: [codex-worker-1]
+    model: codex           # OpenAI Codex CLI
+
+  fast-research:
+    sessions: [kimi-worker-1]
+    model: kimi            # Kimi CLI
+```
 
 ### Session resume
 When a worker is restarted (crash, redeploy, server reboot), orchmux gracefully exits the Claude Code session (`/exit`), saves the session ID to disk, and resumes it with `claude --resume <id>` on relaunch. Workers keep their full conversation context across restarts.
@@ -159,13 +191,15 @@ metabase: |
   ## Metabase Access
   - URL: http://metabase.internal:3000
   - API key: mb_YOUR_KEY
-  - DB ID 1 = production
 
 snowflake: |
   ## Snowflake Access
   - Account: your-account.snowflakecomputing.com
   - User: YOUR_USER  Password: YOUR_PASSWORD
 ```
+
+### Model health + automatic fallback
+`lib/model_health.py` tracks per-model failure rates. If a model enters cooldown (too many consecutive failures), orchmux automatically routes to the configured fallback model and resumes normal routing once the cooldown clears.
 
 ### Auto-heal watchdog
 Every orchmux component self-heals via `while true` shell loops. The watcher also monitors itself via cron (external safety net).
@@ -175,55 +209,44 @@ Dispatch tasks, check worker status, peek at terminal panes — all from Telegra
 
 ---
 
-## Access from your phone (Tailscale)
+## Access from your phone
 
-orchmux's web dashboard is a mobile-responsive single-page app. The cleanest way to access it securely from anywhere — including fully air-gapped setups — is Tailscale.
+### Option A — Native iOS app (recommended)
+
+Build and install the orchmux iOS app from `ios/Orchmux.xcodeproj`. See [AGENTS.md § iOS App Setup](AGENTS.md#ios-app-setup) for the full guide.
+
+Features: live worker status, task dispatch, question answering, vault browsing, todos.
+
+### Option B — Mobile web browser (Tailscale)
+
+orchmux's web dashboard is a mobile-responsive single-page app. The cleanest way to access it securely from anywhere is Tailscale.
 
 Tailscale is a zero-config WireGuard VPN. Your phone and server join the same private network; the dashboard is reachable only to devices on your tailnet. No port-forwarding, no public IP, no cloud intermediary.
 
-### Setup (5 minutes)
+**Setup (5 minutes):**
 
-**1. Install Tailscale on the server**
 ```bash
+# 1. Install Tailscale on the server
 curl -fsSL https://tailscale.com/install.sh | sh
 sudo tailscale up
 # Note your Tailscale IP: tailscale ip -4   →  100.x.x.x
-```
 
-**2. Install Tailscale on your phone**
-iOS or Android — install from the App Store / Play Store, sign in to the same account.
+# 2. Bind orchmux to the Tailscale interface
+echo "ORCHMUX_BIND_HOST=100.x.x.x" >> .env
 
-**3. Bind orchmux to the Tailscale IP**
-
-In `.env.local`:
-```
-ORCHMUX_BIND_HOST=100.x.x.x
-```
-
-**4. (Optional) Generate a TLS cert for HTTPS**
-```bash
+# 3. (Optional) Generate a TLS cert for HTTPS
 openssl req -x509 -newkey rsa:2048 -days 3650 -nodes \
   -subj "/CN=orchmux" \
   -addext "subjectAltName=IP:100.x.x.x" \
   -keyout server/key.pem -out server/cert.pem
-```
-Accept the cert warning once in your phone browser — trusted from then on.
 
-**5. Open the dashboard on your phone**
-```
-https://100.x.x.x:9889/dashboard
+# 4. Open dashboard on your phone
+# http://100.x.x.x:9889/dashboard
 ```
 
-### Why this is effectively air-gapped
+Install Tailscale on your phone (App Store / Play Store), sign in to the same account. Dashboard is reachable on cellular, public wifi — anywhere with internet.
 
-- Dashboard only reachable inside your Tailscale network
-- WireGuard end-to-end encryption
-- Works on cellular, public wifi — anywhere your phone has internet
-- Workers themselves can be fully offline (no internet needed)
-- Tailscale ACLs let you restrict which devices can reach which ports
-
-### Headscale (self-hosted Tailscale)
-For fully self-hosted/no-Tailscale-cloud setups, use [Headscale](https://github.com/juanfont/headscale) — a self-hosted Tailscale control plane. orchmux works identically; just point Tailscale clients at your Headscale server.
+**Headscale:** for fully self-hosted setups, use [Headscale](https://github.com/juanfont/headscale) — a self-hosted Tailscale control plane. orchmux works identically.
 
 ---
 
@@ -337,6 +360,7 @@ Any session name you add to `workers.yaml` will appear in the dashboard immediat
 | `uv` or `pip` | Python dependency management |
 | Tailscale (optional) | Secure remote access over VPN |
 | Telegram bot token (optional) | Telegram notifications + dispatch |
+| Xcode 15+ (optional) | Build the iOS app |
 
 ### Full setup
 
@@ -356,6 +380,7 @@ cp .env.example .env.local
 #   TELEGRAM_BOT_TOKEN=your_bot_token   (optional)
 #   TELEGRAM_CHAT_ID=your_chat_id       (optional)
 #   ORCHMUX_BIND_HOST=100.x.x.x         (Tailscale IP, or 0.0.0.0)
+#   ORCHMUX_VAULT=/path/to/your/vault   (optional, default: ~/vault)
 
 # 4. Workers config
 cp workers.yaml.example workers.yaml
@@ -375,7 +400,7 @@ openssl req -x509 -newkey rsa:2048 -days 3650 -nodes \
 bash orchmux.sh
 ```
 
-Dashboard: `https://YOUR_HOST:9889/dashboard`
+Dashboard: `http://localhost:9889/dashboard`
 
 ---
 
@@ -492,11 +517,26 @@ curl -X POST http://localhost:9889/dispatch \
   -H "Content-Type: application/json" \
   -d '{"domain":"data","task":"Run Q4 revenue report","session":"data-worker-1"}'
 
-# Status
+# Status + health
 curl http://localhost:9889/status
 curl http://localhost:9889/health
 curl http://localhost:9889/queue
 curl http://localhost:9889/completed
+
+# Insights
+curl http://localhost:9889/timeline        # dispatch/complete events
+curl http://localhost:9889/costs           # task counts + avg duration by domain
+curl http://localhost:9889/model-health    # per-model failure state + cooldown
+curl http://localhost:9889/doctor          # system health checks
+
+# Vault
+curl http://localhost:9889/vault-info      # vault name + path
+curl "http://localhost:9889/vault/ls?path=Architecture"
+curl "http://localhost:9889/vault/read?path=Architecture/auth-flow.md"
+
+# Workers
+curl http://localhost:9889/session-domains  # session → domain mapping
+curl -X POST http://localhost:9889/restart  # hot-reload server in-place
 ```
 
 ---
@@ -532,11 +572,25 @@ Free-text messages auto-dispatch as tasks (keyword domain matching).
 ```
 orchmux/
 ├── server/
-│   ├── server.py                    # FastAPI server + web dashboard
+│   ├── server.py                    # FastAPI server + web dashboard + all API endpoints
 │   ├── service-context.yaml         # Your credentials (gitignored)
 │   ├── service-context.example.yaml # Template (committed)
 │   ├── cert.pem                     # TLS cert (gitignored)
 │   └── key.pem
+├── lib/
+│   ├── timeline.py                  # Per-session dispatch/complete event log
+│   ├── costs.py                     # Task count + duration tracking by domain
+│   ├── model_health.py              # Per-model failure tracking + cooldown/fallback
+│   ├── preflight.py                 # Pre-dispatch readiness checks
+│   └── notify.py                   # Telegram + Slack notification helpers
+├── ios/
+│   ├── Orchmux.xcodeproj            # Xcode project
+│   └── Orchmux/                     # Swift source (Views, Models, Services, Config)
+├── clean/
+│   ├── orchmux-clean.html           # Clean dashboard shell
+│   ├── v3-split.jsx                 # Main split-pane dashboard UI
+│   ├── mobile.jsx                   # Mobile-optimized dashboard
+│   └── shared.jsx                   # Shared React components
 ├── worker/
 │   └── {domain}/CLAUDE.md           # Per-domain worker prompt
 ├── session-ids/                     # Resume IDs for all workers (gitignored)
@@ -549,6 +603,7 @@ orchmux/
 ├── heal-watcher.sh                  # Cron-based watcher auto-heal
 ├── save-session-ids.sh              # Manual session ID checkpoint
 ├── monitor-table.sh                 # Terminal dashboard renderer
+├── AGENTS.md                        # Worker instructions (read by AI agents)
 └── workers.yaml                     # Worker + domain configuration
 ```
 
