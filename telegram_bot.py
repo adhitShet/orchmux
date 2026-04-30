@@ -34,17 +34,37 @@ _SSL_CTX.check_hostname = False
 _SSL_CTX.verify_mode = ssl.CERT_NONE
 
 # ── Config ──────────────────────────────────────────────────────────────────
-ENV_FILE = Path.home() / ".claude/hooks/.env"
-for line in ENV_FILE.read_text().splitlines():
-    if "=" in line and not line.startswith("#"):
+# Load env from $ORCHMUX_DIR/.env first (canonical, same file orchmux.sh reads),
+# then fall back to ~/.claude/hooks/.env (legacy). Either may be absent.
+_SCRIPT_DIR = Path(__file__).resolve().parent
+
+def _load_env_file(path: Path) -> None:
+    try:
+        text = path.read_text()
+    except FileNotFoundError:
+        return
+    for line in text.splitlines():
+        if "=" not in line or line.startswith("#"):
+            continue
         k, _, v = line.partition("=")
-        os.environ.setdefault(k.strip(), v.strip())
+        k, v = k.strip(), v.strip()
+        # Treat existing empty values as missing. tmux global env can carry
+        # over an empty TELEGRAM_BOT_TOKEN= from a prior run with a blank
+        # .env, and setdefault() would refuse to overwrite that empty string.
+        if not os.environ.get(k):
+            os.environ[k] = v
+
+for _env_path in (_SCRIPT_DIR / ".env", Path.home() / ".claude/hooks/.env"):
+    _load_env_file(_env_path)
 
 TOKEN   = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
 if not TOKEN:
-    sys.exit("TELEGRAM_BOT_TOKEN not set")
+    sys.exit(
+        f"TELEGRAM_BOT_TOKEN not set — add it to {_SCRIPT_DIR}/.env "
+        "(or ~/.claude/hooks/.env) or export it before launching."
+    )
 
 TG = f"https://api.telegram.org/bot{TOKEN}"
 
