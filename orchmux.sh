@@ -8,8 +8,16 @@ WATCHER_PIDS="/tmp/orchmux-watchers.pid"
 QUEUE_DIR="$ORCHMUX_DIR/queue"
 SUP_CFG="/tmp/orchmux-supervisor"
 
+# Prefer the venv python (which has pyyaml installed per setup docs).
+# Fall back to system python3 only if .venv is missing.
+if [[ -x "$ORCHMUX_DIR/.venv/bin/python" ]]; then
+  PYTHON="$ORCHMUX_DIR/.venv/bin/python"
+else
+  PYTHON="python3"
+fi
+
 get_sessions() {
-  python3 -c "
+  "$PYTHON" -c "
 import yaml
 with open('$ORCHMUX_DIR/workers.yaml') as f: d = yaml.safe_load(f)
 [print(s) for cfg in d.get('workers',{}).values() for s in cfg.get('sessions',[])]
@@ -153,7 +161,7 @@ fi
 # ── 5. Worker workdirs + launch persistent workers ────────────────────────────
 # Workers use global ~/.claude auth (no CLAUDE_CONFIG_DIR — avoids re-login).
 # Domain CLAUDE.md goes in their cwd. Hooks registered in ~/.claude/settings.json.
-python3 - <<'PYEOF'
+"$PYTHON" - <<'PYEOF'
 import yaml, os, shutil, subprocess, time
 from pathlib import Path
 
@@ -204,7 +212,7 @@ if launched:
 PYEOF
 
 # ── 6. Status ──────────────────────────────────────────────────────────────────
-n=$(python3 -c "
+n=$("$PYTHON" -c "
 import yaml
 with open('$ORCHMUX_DIR/workers.yaml') as f: d = yaml.safe_load(f)
 print(sum(len(c.get('sessions',[])) for c in d.get('workers',{}).values()))
