@@ -274,11 +274,10 @@ git clone https://github.com/adhitShet/orchmux.git
 cd orchmux
 
 # Environment (Telegram + bind address)
-cp .env.example .env.local
-# Edit .env.local if you want Telegram or a specific bind IP
+cp .env.example .env
+# Edit .env if you want Telegram or a specific bind IP
 
-# Worker domains — defines what sessions orchmux manages
-cp workers.yaml.example workers.yaml
+# Worker domains — workers.yaml ships with sensible defaults; edit to add more
 ```
 
 ### Step 3 — Create your first worker session
@@ -375,16 +374,15 @@ source .venv/bin/activate
 pip install fastapi uvicorn pyyaml
 
 # 3. Environment config
-cp .env.example .env.local
-# Edit .env.local:
+cp .env.example .env
+# Edit .env:
 #   TELEGRAM_BOT_TOKEN=your_bot_token   (optional)
 #   TELEGRAM_CHAT_ID=your_chat_id       (optional)
 #   ORCHMUX_BIND_HOST=100.x.x.x         (Tailscale IP, or 0.0.0.0)
 #   ORCHMUX_VAULT=/path/to/your/vault   (optional, default: ~/vault)
 
-# 4. Workers config
-cp workers.yaml.example workers.yaml
-# Edit workers.yaml — define your domains and session names
+# 4. Workers config — workers.yaml ships with one engineering worker by default
+# Edit workers.yaml to define additional domains and session names
 
 # 5. Service context (credentials for smart injection — never committed)
 cp server/service-context.example.yaml server/service-context.yaml
