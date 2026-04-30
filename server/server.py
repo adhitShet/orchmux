@@ -27,7 +27,7 @@ from lib.notify import notify as _notify_channel
 from lib.model_health import record_failure, record_success, is_healthy, get_fallback, health_summary as _model_health_summary
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -1828,6 +1828,15 @@ async def slack_send(req: Request, token: str = ""):
         return {"ok": False, "error": resp.get("error", "unknown")}
     except Exception:
         raise HTTPException(500, "Slack API error")
+
+
+@app.get("/")
+async def root(request: Request):
+    # Friendlier than a bare 404. Preserve any query string (e.g. ?token=…)
+    # so authenticated bookmarks pointed at / still work.
+    qs = request.url.query
+    target = f"/dashboard?{qs}" if qs else "/dashboard"
+    return RedirectResponse(url=target)
 
 
 @app.get("/dashboard")
